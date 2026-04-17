@@ -1,65 +1,95 @@
-import Image from "next/image";
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { Playfair_Display, Inter } from "next/font/google";
+
+// Configuração das fontes importadas diretamente pelo Next.js
+const playfair = Playfair_Display({ 
+  subsets: ["latin"], 
+  style: ["normal", "italic"] 
+});
+const inter = Inter({ 
+  subsets: ["latin"],
+  weight: ["400", "500"] 
+});
 
 export default function Home() {
+  const [name, setName] = useState("");
+  const [roomCode, setRoomCode] = useState("");
+  const router = useRouter();
+
+  const handleJoin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim() || !roomCode.trim()) return;
+    
+    localStorage.setItem("playerName", name);
+    router.push(`/room/${roomCode.toUpperCase().trim()}`);
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    // Fundo preto puro, aplicando a fonte Inter globalmente para os textos
+    <main className={`min-h-screen bg-[#0a0a0a] flex items-center justify-center p-4 ${inter.className}`}>
+      
+      {/* Card Central: dimensões, cores e bordas exatas da especificação */}
+      <div className="w-full max-w-[480px] bg-[#111111] border border-[rgba(255,255,255,0.07)] rounded-[10px] p-10 sm:p-12">
+        
+        <div className="text-center mb-10">
+          {/* Título: Fonte serifada, elegante, com acento na cor âmbar/dourado e em itálico */}
+          <h1 className={`${playfair.className} text-4xl sm:text-5xl text-white mb-3 tracking-tight`}>
+            Saco de <em className="text-[#d4a853] italic">Risco</em>
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+          {/* Subtítulo: Sem caixa alta, cor sutil */}
+          <p className="text-[rgba(255,255,255,0.5)] text-sm">
+            Prepare-se para sacar.
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+
+        <form onSubmit={handleJoin} className="flex flex-col gap-6">
+          
+          {/* Input: Nome */}
+          <div className="flex flex-col gap-2">
+            <label className="text-[11px] tracking-[0.08em] text-[rgba(255,255,255,0.4)] uppercase">
+              Identificação
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full h-[48px] bg-[#0f0f0f] border border-[rgba(255,255,255,0.12)] rounded-[6px] pl-4 pr-4 text-[15px] text-white placeholder:text-[rgba(255,255,255,0.2)] focus:outline-none focus:border-[rgba(255,255,255,0.35)] transition-colors"
+              placeholder="Seu nome ou apelido"
+              maxLength={15}
+              required
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+          </div>
+
+          {/* Input: Sala */}
+          <div className="flex flex-col gap-2">
+            <label className="text-[11px] tracking-[0.08em] text-[rgba(255,255,255,0.4)] uppercase">
+              Código alvo
+            </label>
+            <input
+              type="text"
+              value={roomCode}
+              onChange={(e) => setRoomCode(e.target.value)}
+              className="w-full h-[48px] bg-[#0f0f0f] border border-[rgba(255,255,255,0.12)] rounded-[6px] pl-4 pr-4 text-[15px] text-white placeholder:text-[rgba(255,255,255,0.2)] focus:outline-none focus:border-[rgba(255,255,255,0.35)] transition-colors uppercase"
+              placeholder="EX: SALA42"
+              maxLength={10}
+              required
+            />
+          </div>
+
+          {/* Botão de Ação */}
+          <button
+            type="submit"
+            disabled={!name.trim() || !roomCode.trim()}
+            className="mt-2 w-full h-[52px] bg-white text-[#0a0a0a] font-medium text-[15px] rounded-[6px] hover:bg-gray-200 active:scale-[0.99] disabled:opacity-20 disabled:cursor-not-allowed transition-all"
           >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+            Acessar sala
+          </button>
+
+        </form>
+      </div>
+    </main>
   );
 }
