@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useEffect, useState, useRef } from "react";
@@ -9,9 +10,9 @@ const playfair = Playfair_Display({ subsets: ["latin"], style: ["normal", "itali
 const inter = Inter({ subsets: ["latin"], weight: ["400", "500"] });
 
 export default function RoomPage() {
-  const params = useParams() as { code: string };
+  const params = useParams();
   const router = useRouter();
-  const roomCode = params.code;
+  const roomCode = String(params?.code || "");
 
   const hasInitialized = useRef(false);
 
