@@ -34,34 +34,41 @@ export default function RoomPage() {
 
     const initGame = async () => {
       try {
-        let { data: roomData } = await supabase.from("rooms").select("*").eq("code", roomCode).single();
+        // 1. Busca a sala com PROTEÇÃO (maybeSingle evita erro se não existir)
+        let { data: roomData, error: roomError } = await supabase.from("rooms").select("*").eq("code", roomCode).maybeSingle();
+        
+        if (roomError) throw new Error("Erro ao buscar sala: " + roomError.message);
 
         if (!roomData) {
-          const { data: newRoom } = await supabase.from("rooms").insert({ code: roomCode }).select().single();
+          const { data: newRoom, error: insertRoomError } = await supabase.from("rooms").insert({ code: roomCode }).select().single();
+          if (insertRoomError) throw new Error("Erro ao criar sala: " + insertRoomError.message);
           roomData = newRoom;
         }
         
-        let { data: existingPlayer } = await supabase
+        // 2. Busca o jogador com PROTEÇÃO
+        let { data: playerData, error: playerError } = await supabase
           .from("players")
           .select("*")
           .eq("room_id", roomData.id)
           .eq("name", playerName)
-          .single();
+          .maybeSingle();
 
-        let playerData = existingPlayer;
+        if (playerError) throw new Error("Erro ao buscar jogador: " + playerError.message);
 
+        // Se não existir, cria um novo
         if (!playerData) {
-          // Impede de entrar se o jogo já começou (Tranca a sala)
           if (roomData.status !== 'lobby') {
             alert("Partida em andamento! Você não pode entrar agora.");
             router.push("/");
             return;
           }
 
-          const { data: newPlayer } = await supabase.from("players").insert({
+          const { data: newPlayer, error: insertPlayerError } = await supabase.from("players").insert({
             room_id: roomData.id,
             name: playerName,
           }).select().single();
+          
+          if (insertPlayerError) throw new Error("Erro ao criar jogador: " + insertPlayerError.message);
           playerData = newPlayer;
         }
 
@@ -73,6 +80,8 @@ export default function RoomPage() {
           if (data) setPlayers(data);
         };
         await fetchPlayers();
+        
+        // SUCESSO! Libera a tela
         setLoading(false);
 
         const channel = supabase.channel(`room_${roomData.id}`)
@@ -88,8 +97,11 @@ export default function RoomPage() {
           .subscribe();
 
         return () => { supabase.removeChannel(channel); };
-      } catch (error) {
-        console.error("Erro ao inicializar:", error);
+      } catch (error: any) {
+        // SE DER ERRO, VAI APARECER NA TELA E PARAR O LOADING!
+        console.error("Erro FATAL ao inicializar:", error);
+        alert("Ops, algo deu errado: " + error.message);
+        setLoading(false); 
       }
     };
 
@@ -103,12 +115,10 @@ export default function RoomPage() {
     const newReadyState = !me.is_ready;
     await supabase.from("players").update({ is_ready: newReadyState }).eq("id", me.id);
 
-    // Verifica se com essa ação, TODO MUNDO ficou pronto
     const updatedPlayers = players.map(p => p.id === me.id ? { ...p, is_ready: newReadyState } : p);
     const allReady = updatedPlayers.length > 1 && updatedPlayers.every(p => p.is_ready);
 
     if (allReady && room.status === 'lobby') {
-      // Define o primeiro a jogar e muda o status da sala
       const firstPlayer = updatedPlayers[0];
       await supabase.from("rooms").update({ 
         status: 'playing',
@@ -122,7 +132,7 @@ export default function RoomPage() {
   };
 
   // ==========================================
-  // LÓGICA DE TURNOS E JOGO BASE (Mantida da V2)
+  // LÓGICA DE TURNOS E JOGO BASE (V3.0)
   // ==========================================
   const isMyTurn = room?.current_turn_player_id === me?.id;
   const amIDead = me?.hp <= 0;
@@ -142,35 +152,49 @@ export default function RoomPage() {
 
   const handleDraw = async () => {
     if (!isMyTurn || amIDead || isGameOver) return;
-    const totalInBag = room.bag_greens + room.bag_blues + room.bag_reds;
+    const totalInBag = room.bag_greens + room.bag_blues + room.bag_reds + room.bag_batteries + room.bag_viruses;
     if (totalInBag <= 0) return alert("O Saco está vazio!");
 
     const roll = Math.random() * totalInBag;
     let newBagGreens = room.bag_greens, newBagBlues = room.bag_blues, newBagReds = room.bag_reds;
-    let newTurnGreens = me.turn_greens, newTurnBlues = me.turn_blues, newRedsInTurn = me.reds_in_turn, newHp = me.hp;
+    let newBagBatteries = room.bag_batteries, newBagViruses = room.bag_viruses;
+    
+    let newTurnGreens = me.turn_greens, newTurnBlues = me.turn_blues, newRedsInTurn = me.reds_in_turn;
+    let newTurnBatteries = me.turn_batteries, newVirusesInTurn = me.viruses_in_turn;
+    
+    let newHp = me.hp;
     let newForcedDraws = Math.max(0, me.forced_draws - 1);
+    
     let isExplosion = false;
+    let isVirusSkip = false;
 
     if (roll < newBagGreens) { newBagGreens--; newTurnGreens++; }
     else if (roll < newBagGreens + newBagBlues) { newBagBlues--; newTurnBlues++; }
-    else {
+    else if (roll < newBagGreens + newBagBlues + newBagBatteries) { newBagBatteries--; newTurnBatteries++; }
+    else if (roll < newBagGreens + newBagBlues + newBagBatteries + newBagViruses) { 
+      newBagViruses--; newVirusesInTurn++;
+      if (newVirusesInTurn >= 2) {
+        isVirusSkip = true; newTurnGreens = 0; newTurnBlues = 0; newTurnBatteries = 0; newRedsInTurn = 0; newVirusesInTurn = 0; newForcedDraws = 0;
+      }
+    } else {
       newBagReds--; newRedsInTurn++;
       if (newRedsInTurn >= 2) {
-        isExplosion = true; newHp--; newTurnGreens = 0; newTurnBlues = 0; newRedsInTurn = 0; newForcedDraws = 0; 
+        isExplosion = true; newHp--; newTurnGreens = 0; newTurnBlues = 0; newTurnBatteries = 0; newRedsInTurn = 0; newVirusesInTurn = 0; newForcedDraws = 0; 
       }
     }
 
-    await supabase.from("rooms").update({ bag_greens: newBagGreens, bag_blues: newBagBlues, bag_reds: newBagReds }).eq("id", room.id);
-    await supabase.from("players").update({ hp: newHp, turn_greens: newTurnGreens, turn_blues: newTurnBlues, reds_in_turn: newRedsInTurn, forced_draws: newForcedDraws }).eq("id", me.id);
+    await supabase.from("rooms").update({ bag_greens: newBagGreens, bag_blues: newBagBlues, bag_reds: newBagReds, bag_batteries: newBagBatteries, bag_viruses: newBagViruses }).eq("id", room.id);
+    await supabase.from("players").update({ hp: newHp, turn_greens: newTurnGreens, turn_blues: newTurnBlues, turn_batteries: newTurnBatteries, reds_in_turn: newRedsInTurn, viruses_in_turn: newVirusesInTurn, forced_draws: newForcedDraws }).eq("id", me.id);
 
     if (isExplosion) {
       alert("💥 CURTO-CIRCUITO! 2º Curto. 1 Dano e turno perdido.");
       if (newHp <= 0) {
          const nextP = getNextAlivePlayer();
          if (nextP) await supabase.from("rooms").update({ current_turn_player_id: nextP.id }).eq("id", room.id);
-      } else {
-         await handlePassTurn(true);
-      }
+      } else { await handlePassTurn(true); }
+    } else if (isVirusSkip) {
+      alert("🦠 VÍRUS DETECTADO! 2º Vírus. Turno perdido (sem dano).");
+      await handlePassTurn(true);
     }
   };
 
@@ -182,15 +206,17 @@ export default function RoomPage() {
     if (!nextPlayer) return;
 
     if (!isFromExplosion) {
-      await supabase.from("players").update({ greens: me.greens + me.turn_greens, blues: me.blues + me.turn_blues, turn_greens: 0, turn_blues: 0, reds_in_turn: 0 }).eq("id", me.id);
+      await supabase.from("players").update({ 
+        greens: me.greens + me.turn_greens, 
+        blues: me.blues + me.turn_blues, 
+        batteries: me.batteries + me.turn_batteries,
+        turn_greens: 0, turn_blues: 0, turn_batteries: 0, reds_in_turn: 0, viruses_in_turn: 0 
+      }).eq("id", me.id);
     }
     await supabase.from("rooms").update({ current_turn_player_id: nextPlayer.id }).eq("id", room.id);
   };
 
-  // ==========================================
-  // RENDERIZAÇÃO CONDICIONAL DAS TELAS
-  // ==========================================
-  if (loading) return <div className={`min-h-screen bg-[#0a0a0a] flex items-center justify-center text-[rgba(255,255,255,0.5)] ${inter.className}`}>Conectando...</div>;
+  if (loading) return <div className={`min-h-screen bg-[#0a0a0a] flex items-center justify-center text-[rgba(255,255,255,0.5)] ${inter.className}`}>Conectando aos servidores...</div>;
 
   // TELA 1: LOBBY
   if (room?.status === 'lobby') {
@@ -224,7 +250,7 @@ export default function RoomPage() {
     );
   }
 
-  // TELA 2: JOGO (Mantida igual à Fase 5 por enquanto, para garantir que o pulo funciona)
+  // TELA 2: JOGO BASE
   return (
     <main className={`min-h-screen bg-[#0a0a0a] text-white p-6 md:p-12 ${inter.className}`}>
       
@@ -247,16 +273,17 @@ export default function RoomPage() {
         <div className="text-right">
           <p className="text-[11px] tracking-[0.08em] text-[rgba(255,255,255,0.4)] uppercase mb-1">Saco de Risco</p>
           <div className="flex gap-4 text-sm font-medium">
-            <span className="text-green-500">{room?.bag_greens} PCBs</span>
-            <span className="text-blue-500">{room?.bag_blues} Blueprints</span>
-            <span className="text-red-500">{room?.bag_reds} Curtos</span>
+            <span className="text-green-500">{room?.bag_greens} V</span>
+            <span className="text-blue-500">{room?.bag_blues} A</span>
+            <span className="text-yellow-500">{room?.bag_batteries} B</span>
+            <span className="text-red-500">{room?.bag_reds} C</span>
+            <span className="text-purple-500">{room?.bag_viruses} Vi</span>
           </div>
         </div>
       </header>
 
       <div className="max-w-5xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-8">
         
-        {/* COLUNA ESQUERDA: Ações */}
         <div className={`md:col-span-2 bg-[#111111] border rounded-[10px] p-8 flex flex-col items-center justify-center min-h-[400px] transition-colors ${isMyTurn && !amIDead ? 'border-[rgba(212,168,83,0.3)]' : 'border-[rgba(255,255,255,0.07)] opacity-80'}`}>
           {amIDead ? (
             <h2 className={`${playfair.className} text-3xl mb-2 text-red-500`}>Eliminado</h2>
@@ -267,11 +294,12 @@ export default function RoomPage() {
               </h2>
               
               {activePlayer && (
-                <div className="flex gap-6 mb-8 bg-[#0a0a0a] p-4 rounded-[6px] border border-[rgba(255,255,255,0.05)] text-sm">
-                  <span className="text-[rgba(255,255,255,0.6)] uppercase text-[10px] absolute -mt-7">Em mãos agora</span>
-                  <div className="text-green-500">{activePlayer.turn_greens} <span className="text-[rgba(255,255,255,0.5)]">PCBs</span></div>
-                  <div className="text-blue-500">{activePlayer.turn_blues} <span className="text-[rgba(255,255,255,0.5)]">Blueprints</span></div>
-                  <div className={`${activePlayer.reds_in_turn > 0 ? 'text-red-500 animate-pulse' : 'text-red-900'}`}>{activePlayer.reds_in_turn}/2 <span className="text-[rgba(255,255,255,0.5)]">Curtos</span></div>
+                <div className="flex gap-4 mb-8 bg-[#0a0a0a] p-4 rounded-[6px] border border-[rgba(255,255,255,0.05)] text-sm">
+                  <div className="text-green-500">{activePlayer.turn_greens} <span className="text-[rgba(255,255,255,0.5)]">PCB</span></div>
+                  <div className="text-blue-500">{activePlayer.turn_blues} <span className="text-[rgba(255,255,255,0.5)]">Blue</span></div>
+                  <div className="text-yellow-500">{activePlayer.turn_batteries} <span className="text-[rgba(255,255,255,0.5)]">Bat</span></div>
+                  <div className={`${activePlayer.reds_in_turn > 0 ? 'text-red-500 animate-pulse' : 'text-red-900'}`}>{activePlayer.reds_in_turn}/2 <span className="text-[rgba(255,255,255,0.5)]">Cur</span></div>
+                  <div className={`${activePlayer.viruses_in_turn > 0 ? 'text-purple-500 animate-pulse' : 'text-purple-900'}`}>{activePlayer.viruses_in_turn}/2 <span className="text-[rgba(255,255,255,0.5)]">Vir</span></div>
                 </div>
               )}
               
@@ -283,24 +311,22 @@ export default function RoomPage() {
           )}
         </div>
 
-        {/* COLUNA DIREITA: Jogadores */}
         <div className="flex flex-col gap-4">
-          <h3 className="text-[11px] tracking-[0.08em] text-[rgba(255,255,255,0.4)] uppercase mb-2">Rede de Jogadores</h3>
+          <h3 className="text-[11px] tracking-[0.08em] text-[rgba(255,255,255,0.4)] uppercase mb-2">Rede</h3>
           {players.map((p) => {
             const pIsActive = room?.current_turn_player_id === p.id;
             const pIsDead = p.hp <= 0;
             return (
-              <div key={p.id} className={`bg-[#111111] border ${pIsActive && !pIsDead ? 'border-[#d4a853]' : 'border-[rgba(255,255,255,0.07)]'} rounded-[10px] p-5 relative overflow-hidden ${pIsDead ? 'opacity-30 grayscale' : ''}`}>
+              <div key={p.id} className={`bg-[#111111] border ${pIsActive && !pIsDead ? 'border-[#d4a853]' : 'border-[rgba(255,255,255,0.07)]'} rounded-[10px] p-4 relative overflow-hidden ${pIsDead ? 'opacity-30 grayscale' : ''}`}>
                 {pIsActive && !pIsDead && <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#d4a853]" />}
-                <div className="flex justify-between items-center mb-4 pl-2">
-                  <span className="font-medium text-[15px]">
-                    {p.name} {p.id === me?.id && <span className="text-[#d4a853] text-xs ml-2">(Você)</span>}
-                  </span>
+                <div className="flex justify-between items-center mb-3 pl-2">
+                  <span className="font-medium text-[15px]">{p.name}</span>
                   <span className="text-sm bg-[#0a0a0a] px-2 py-1 rounded-[4px] border border-[rgba(255,255,255,0.05)] text-white">HP: {p.hp}</span>
                 </div>
-                <div className="grid grid-cols-2 gap-2 text-center text-xs pl-2">
-                  <div className="bg-[#0a0a0a] p-2 rounded-[4px] border border-[rgba(255,255,255,0.02)]"><span className="block text-green-500 mb-1">PCBs</span><span className="text-[rgba(255,255,255,0.8)] font-medium">{p.greens}</span></div>
-                  <div className="bg-[#0a0a0a] p-2 rounded-[4px] border border-[rgba(255,255,255,0.02)]"><span className="block text-blue-500 mb-1">Blueprints</span><span className="text-[rgba(255,255,255,0.8)] font-medium">{p.blues}</span></div>
+                <div className="grid grid-cols-3 gap-2 text-center text-xs pl-2">
+                  <div className="bg-[#0a0a0a] p-1 rounded border border-[rgba(255,255,255,0.02)] text-green-500">{p.greens}</div>
+                  <div className="bg-[#0a0a0a] p-1 rounded border border-[rgba(255,255,255,0.02)] text-blue-500">{p.blues}</div>
+                  <div className="bg-[#0a0a0a] p-1 rounded border border-[rgba(255,255,255,0.02)] text-yellow-500">{p.batteries}</div>
                 </div>
               </div>
             )
