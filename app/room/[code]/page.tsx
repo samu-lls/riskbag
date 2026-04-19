@@ -10,6 +10,20 @@ import { Playfair_Display, Inter } from "next/font/google";
 const playfair = Playfair_Display({ subsets: ["latin"], style: ["normal", "italic"] });
 const inter = Inter({ subsets: ["latin"], weight: ["400", "500"] });
 
+// ==========================================
+// BANCO DE DADOS DE ITENS (MERCADO NEGRO)
+// ==========================================
+const SHOP_ITEMS = [
+  { id: 'firewall', name: 'Firewall', type: 'defense', cost: { green: 2, blue: 1, yellow: 0 }, desc: 'Absorve 1 Dano letal ou ataque inimigo e quebra.' },
+  { id: 'patch', name: 'Patch de Segurança', type: 'heal', cost: { green: 0, blue: 1, yellow: 2 }, desc: 'Recupera +1 HP instantaneamente.' },
+  { id: 'vpn', name: 'VPN', type: 'defense', cost: { green: 0, blue: 1, yellow: 1 }, desc: 'Pula seu próximo turno sem precisar sacar nada.' },
+  { id: 'trojan', name: 'Trojan', type: 'attack', cost: { green: 1, blue: 1, yellow: 1 }, desc: 'Força um alvo a sacar 3 vezes no turno dele.' },
+  { id: 'phishing', name: 'Phishing', type: 'attack', cost: { green: 2, blue: 1, yellow: 0 }, desc: 'Rouba 2 itens base aleatórios do cofre de um inimigo.' },
+  { id: 'reboot', name: 'Reboot', type: 'utility', cost: { green: 0, blue: 1, yellow: 1 }, desc: 'Devolve 2 Curtos/Vírus da sua mão direto para o Saco.' },
+  { id: 'zeroday', name: 'Exploit Zero-Day', type: 'fatal', cost: { green: 0, blue: 2, yellow: 3 }, desc: 'Retira 1 HP do alvo instantaneamente sem defesas.' },
+  { id: 'ddos', name: 'DDoS Automático', type: 'fatal', cost: { green: 2, blue: 2, yellow: 1 }, desc: 'Força todos os inimigos a sacarem 2 itens fora do turno.' }
+];
+
 export default function RoomPage() {
   const params = useParams();
   const router = useRouter();
@@ -24,17 +38,14 @@ export default function RoomPage() {
   const [players, setPlayers] = useState<any[]>([]);
   
   const [isProcessing, setIsProcessing] = useState(false);
-  const [onlineUsers, setOnlineUsers] = useState<string[]>([]); // RADAR DE PRESENÇA
+  const [onlineUsers, setOnlineUsers] = useState<string[]>([]);
 
   useEffect(() => {
     if (hasInitialized.current) return;
     hasInitialized.current = true;
 
     const playerName = localStorage.getItem("playerName");
-    if (!playerName) {
-      router.push("/");
-      return;
-    }
+    if (!playerName) { router.push("/"); return; }
 
     const initGame = async () => {
       try {
@@ -50,18 +61,18 @@ export default function RoomPage() {
         }
         
         let { data: playerData, error: playerError } = await supabase.from("players").select("*").eq("room_id", roomData.id).eq("name", playerName).maybeSingle();
-        if (playerError) throw new Error("Erro de dados duplicados. Limpe o banco de dados.");
+        if (playerError) throw new Error("Erro de dados duplicados. Limpe o banco.");
 
         if (!playerData) {
           const currentStatus = roomData.status || 'lobby';
           if (currentStatus !== 'lobby') {
-            alert("Partida em andamento! Você não pode entrar agora.");
+            alert("Partida em andamento!");
             router.push("/");
             return;
           }
 
           const { data: newPlayer, error: insertPlayerError } = await supabase.from("players").insert({
-            room_id: roomData.id, name: playerName, is_ready: false
+            room_id: roomData.id, name: playerName, is_ready: false, inventory: [], shop_slots: []
           }).select().single();
           if (insertPlayerError) throw new Error("Erro ao criar jogador: " + insertPlayerError.message);
           playerData = newPlayer;
@@ -77,34 +88,25 @@ export default function RoomPage() {
         await fetchPlayers();
         setLoading(false);
 
-        // CONFIGURA O CANAL COM PRESENÇA (RADAR)
-        const channel = supabase.channel(`room_${roomData.id}`, {
-          config: { presence: { key: playerData.id } }
-        });
+        const channel = supabase.channel(`room_${roomData.id}`, { config: { presence: { key: playerData.id } } });
 
         channel
           .on("postgres_changes", { event: "*", schema: "public", table: "players", filter: `room_id=eq.${roomData.id}` }, 
-            (payload) => {
-              if (payload.new.id === playerData.id) setMe(payload.new);
-              fetchPlayers();
-            }
+            (payload) => { if (payload.new.id === playerData.id) setMe(payload.new); fetchPlayers(); }
           )
           .on("postgres_changes", { event: "*", schema: "public", table: "rooms", filter: `id=eq.${roomData.id}` }, 
             (payload) => setRoom(payload.new)
           )
           .on("presence", { event: "sync" }, () => {
             const state = channel.presenceState();
-            setOnlineUsers(Object.keys(state)); // Lista quem está com a aba aberta
+            setOnlineUsers(Object.keys(state));
           })
           .subscribe(async (status) => {
-            if (status === 'SUBSCRIBED') {
-              await channel.track({ online_at: new Date().toISOString() });
-            }
+            if (status === 'SUBSCRIBED') await channel.track({ online_at: new Date().toISOString() });
           });
 
         return () => { supabase.removeChannel(channel); };
       } catch (error: any) {
-        console.error("Erro FATAL:", error);
         setErrorMsg(error.message);
         setLoading(false); 
       }
@@ -114,89 +116,55 @@ export default function RoomPage() {
   }, [roomCode, router]);
 
   // ==========================================
-  // FUNÇÕES DE GERENCIAMENTO (SAIR E EXPULSAR)
+  // LÓGICA DE GERENCIAMENTO (SAIR E EXPULSAR)
   // ==========================================
   const handleQuit = async () => {
-    if (!window.confirm("Tem certeza que deseja sair? Você abandonará a partida.")) return;
+    if (!window.confirm("Tem certeza que deseja sair?")) return;
     setIsProcessing(true);
     try {
       if (room.status === 'lobby') {
         await supabase.from("players").delete().eq("id", me.id);
-        router.push("/");
-        return;
+        router.push("/"); return;
       }
-
-      // Se for meio de jogo e for meu turno, devolvo os itens
-      if (room.current_turn_player_id === me.id) {
+      if (room.current_turn_player_id === me.id && room.status === 'playing') {
         await supabase.from("rooms").update({
-          bag_greens: room.bag_greens + me.turn_greens,
-          bag_blues: room.bag_blues + me.turn_blues,
-          bag_batteries: room.bag_batteries + me.turn_batteries,
-          bag_reds: room.bag_reds + me.reds_in_turn,
-          bag_viruses: room.bag_viruses + me.viruses_in_turn
+          bag_greens: room.bag_greens + me.turn_greens, bag_blues: room.bag_blues + me.turn_blues, bag_batteries: room.bag_batteries + me.turn_batteries, bag_reds: room.bag_reds + me.reds_in_turn, bag_viruses: room.bag_viruses + me.viruses_in_turn
         }).eq("id", room.id);
-      }
-
-      // Passo a vez e me mato
-      if (room.current_turn_player_id === me.id) {
         const nextPlayer = getNextAlivePlayer(me.id);
         if (nextPlayer) await supabase.from("rooms").update({ current_turn_player_id: nextPlayer.id }).eq("id", room.id);
       }
-      
       await supabase.from("players").update({ hp: 0 }).eq("id", me.id);
       router.push("/");
-    } catch (e) {
-      setIsProcessing(false);
-    }
+    } catch (e) { setIsProcessing(false); }
   };
 
   const handleKickOffline = async (targetPlayer: any) => {
-    if (!window.confirm(`Eliminar ${targetPlayer.name} por desconexão?`)) return;
+    if (!window.confirm(`Eliminar ${targetPlayer.name}?`)) return;
     setIsProcessing(true);
     try {
-      // Devolve itens da pessoa offline pro saco
-      await supabase.from("rooms").update({
-        bag_greens: room.bag_greens + targetPlayer.turn_greens,
-        bag_blues: room.bag_blues + targetPlayer.turn_blues,
-        bag_batteries: room.bag_batteries + targetPlayer.turn_batteries,
-        bag_reds: room.bag_reds + targetPlayer.reds_in_turn,
-        bag_viruses: room.bag_viruses + targetPlayer.viruses_in_turn
-      }).eq("id", room.id);
-
-      // Mata o cara offline
-      await supabase.from("players").update({ 
-        hp: 0, turn_greens: 0, turn_blues: 0, turn_batteries: 0, reds_in_turn: 0, viruses_in_turn: 0 
-      }).eq("id", targetPlayer.id);
-
-      // Passa a vez
-      const nextPlayer = getNextAlivePlayer(targetPlayer.id);
-      if (nextPlayer) await supabase.from("rooms").update({ current_turn_player_id: nextPlayer.id }).eq("id", room.id);
-    } finally {
-      setIsProcessing(false);
-    }
+      if (room.current_turn_player_id === targetPlayer.id && room.status === 'playing') {
+        await supabase.from("rooms").update({
+          bag_greens: room.bag_greens + targetPlayer.turn_greens, bag_blues: room.bag_blues + targetPlayer.turn_blues, bag_batteries: room.bag_batteries + targetPlayer.turn_batteries, bag_reds: room.bag_reds + targetPlayer.reds_in_turn, bag_viruses: room.bag_viruses + targetPlayer.viruses_in_turn
+        }).eq("id", room.id);
+        const nextPlayer = getNextAlivePlayer(targetPlayer.id);
+        if (nextPlayer) await supabase.from("rooms").update({ current_turn_player_id: nextPlayer.id }).eq("id", room.id);
+      }
+      await supabase.from("players").update({ hp: 0 }).eq("id", targetPlayer.id);
+    } finally { setIsProcessing(false); }
   };
 
   const handleReturnToLobby = async () => {
     setIsProcessing(true);
     try {
-      // Reseta a sala pro estado inicial
-      await supabase.from("rooms").update({
-        status: 'lobby', bag_greens: 15, bag_blues: 10, bag_batteries: 15, bag_reds: 5, bag_viruses: 5, current_turn_player_id: null
-      }).eq("id", room.id);
-      
-      // Revive e limpa todos os jogadores
+      await supabase.from("rooms").update({ status: 'lobby', bag_greens: 15, bag_blues: 10, bag_batteries: 15, bag_reds: 5, bag_viruses: 5, current_turn_player_id: null, round_count: 1 }).eq("id", room.id);
       for (const p of players) {
-        await supabase.from("players").update({
-          hp: 3, greens: 0, blues: 0, batteries: 0, turn_greens: 0, turn_blues: 0, turn_batteries: 0, reds_in_turn: 0, viruses_in_turn: 0, forced_draws: 0, is_ready: false
-        }).eq("id", p.id);
+        await supabase.from("players").update({ hp: 3, greens: 0, blues: 0, batteries: 0, turn_greens: 0, turn_blues: 0, turn_batteries: 0, reds_in_turn: 0, viruses_in_turn: 0, forced_draws: 0, is_ready: false, inventory: [], shop_slots: [], has_finished_crafting: false }).eq("id", p.id);
       }
-    } finally {
-      setIsProcessing(false);
-    }
+    } finally { setIsProcessing(false); }
   };
 
   // ==========================================
-  // LÓGICA DO LOBBY E JOGO BASE
+  // LÓGICA DO JOGO BASE
   // ==========================================
   const handleToggleReady = async () => {
     if (isProcessing) return;
@@ -204,26 +172,21 @@ export default function RoomPage() {
     try {
       const newReadyState = !me.is_ready;
       await supabase.from("players").update({ is_ready: newReadyState }).eq("id", me.id);
-
       const updatedPlayers = players.map(p => p.id === me.id ? { ...p, is_ready: newReadyState } : p);
       const allReady = updatedPlayers.length > 1 && updatedPlayers.every(p => p.is_ready);
-
       if (allReady && room.status === 'lobby') {
         const firstPlayer = updatedPlayers[0];
         await supabase.from("rooms").update({ status: 'playing', current_turn_player_id: firstPlayer.id, round_count: 1 }).eq("id", room.id);
       } else if (updatedPlayers.length === 1 && newReadyState) {
-          alert("Aguarde mais jogadores para iniciar a partida.");
-          await supabase.from("players").update({ is_ready: false }).eq("id", me.id);
+        alert("Aguarde mais jogadores.");
+        await supabase.from("players").update({ is_ready: false }).eq("id", me.id);
       }
-    } finally {
-      setIsProcessing(false);
-    }
+    } finally { setIsProcessing(false); }
   };
 
-  const isMyTurn = room?.current_turn_player_id === me?.id;
+  const isMyTurn = room?.current_turn_player_id === me?.id && room?.status === 'playing';
   const amIDead = me?.hp <= 0;
   
-  // Função atualizada para calcular a partir de qualquer jogador (útil pra expulsão)
   const getNextAlivePlayer = (baseId = me.id) => {
     const baseIndex = players.findIndex(p => p.id === baseId);
     for (let i = 1; i < players.length; i++) {
@@ -242,7 +205,7 @@ export default function RoomPage() {
     setIsProcessing(true);
     try {
       const totalInBag = room.bag_greens + room.bag_blues + room.bag_reds + room.bag_batteries + room.bag_viruses;
-      if (totalInBag <= 0) return alert("O Saco está vazio!");
+      if (totalInBag <= 0) return alert("Saco vazio!");
 
       const { data: dbPlayer } = await supabase.from("players").select("hp").eq("id", me.id).single();
       let currentHp = dbPlayer?.hp || me.hp;
@@ -250,7 +213,6 @@ export default function RoomPage() {
       const roll = Math.random() * totalInBag;
       let newBagGreens = room.bag_greens, newBagBlues = room.bag_blues, newBagReds = room.bag_reds;
       let newBagBatteries = room.bag_batteries, newBagViruses = room.bag_viruses;
-      
       let newTurnGreens = me.turn_greens, newTurnBlues = me.turn_blues, newRedsInTurn = me.reds_in_turn;
       let newTurnBatteries = me.turn_batteries, newVirusesInTurn = me.viruses_in_turn;
       let newForcedDraws = Math.max(0, me.forced_draws - 1);
@@ -274,22 +236,17 @@ export default function RoomPage() {
         newTurnGreens = 0; newTurnBlues = 0; newTurnBatteries = 0; newRedsInTurn = 0; newVirusesInTurn = 0; newForcedDraws = 0; 
       }
 
-      await supabase.from("rooms").update({ 
-        bag_greens: newBagGreens, bag_blues: newBagBlues, bag_reds: newBagReds, bag_batteries: newBagBatteries, bag_viruses: newBagViruses 
-      }).eq("id", room.id);
-
-      await supabase.from("players").update({ 
-        hp: currentHp, turn_greens: newTurnGreens, turn_blues: newTurnBlues, turn_batteries: newTurnBatteries, reds_in_turn: newRedsInTurn, viruses_in_turn: newVirusesInTurn, forced_draws: newForcedDraws 
-      }).eq("id", me.id);
+      await supabase.from("rooms").update({ bag_greens: newBagGreens, bag_blues: newBagBlues, bag_reds: newBagReds, bag_batteries: newBagBatteries, bag_viruses: newBagViruses }).eq("id", room.id);
+      await supabase.from("players").update({ hp: currentHp, turn_greens: newTurnGreens, turn_blues: newTurnBlues, turn_batteries: newTurnBatteries, reds_in_turn: newRedsInTurn, viruses_in_turn: newVirusesInTurn, forced_draws: newForcedDraws }).eq("id", me.id);
 
       if (isExplosion) {
-        alert("💥 CURTO-CIRCUITO! 2º Curto. 1 Dano recebido. Seus itens voltaram para o Saco.");
+        alert("💥 CURTO-CIRCUITO! Você perdeu 1 HP e todos os itens sacados.");
         if (currentHp <= 0) {
            const nextP = getNextAlivePlayer();
-           if (nextP) await supabase.from("rooms").update({ current_turn_player_id: nextP.id }).eq("id", room.id);
+           if (nextP) await checkRoundAndPass(nextP);
         } else { await executePassTurn(true); }
       } else if (isVirusSkip) {
-        alert("🦠 VÍRUS DETECTADO! 2º Vírus. Turno perdido. Seus itens voltaram para o Saco.");
+        alert("🦠 VÍRUS! Turno perdido. Itens devolvidos.");
         await executePassTurn(true);
       }
     } finally { setIsProcessing(false); }
@@ -302,61 +259,113 @@ export default function RoomPage() {
   };
 
   const executePassTurn = async (isFromExplosion = false) => {
-    if (!isFromExplosion && me.forced_draws > 0) { alert(`Saque mais ${me.forced_draws} vez(es)!`); return; }
+    if (!isFromExplosion && me.forced_draws > 0) { alert(`Faltam ${me.forced_draws} saques!`); return; }
 
     const nextPlayer = getNextAlivePlayer();
     if (!nextPlayer) return;
 
     if (!isFromExplosion) {
-      await supabase.from("rooms").update({
-        bag_reds: room.bag_reds + me.reds_in_turn, bag_viruses: room.bag_viruses + me.viruses_in_turn, current_turn_player_id: nextPlayer.id
-      }).eq("id", room.id);
-
+      await supabase.from("rooms").update({ bag_reds: room.bag_reds + me.reds_in_turn, bag_viruses: room.bag_viruses + me.viruses_in_turn }).eq("id", room.id);
       await supabase.from("players").update({ 
         greens: me.greens + me.turn_greens, blues: me.blues + me.turn_blues, batteries: me.batteries + me.turn_batteries,
         turn_greens: 0, turn_blues: 0, turn_batteries: 0, reds_in_turn: 0, viruses_in_turn: 0 
       }).eq("id", me.id);
+    }
+    
+    await checkRoundAndPass(nextPlayer);
+  };
+
+  // VERIFICA SE A RODADA ACABOU ANTES DE PASSAR O TURNO
+  const checkRoundAndPass = async (nextPlayer: any) => {
+    const myIndex = players.findIndex(p => p.id === me.id);
+    const nextIndex = players.findIndex(p => p.id === nextPlayer.id);
+    
+    // Se o índice do próximo é menor que o meu, a roda deu uma volta completa!
+    const isRoundOver = nextIndex <= myIndex;
+
+    if (isRoundOver) {
+      await supabase.from("rooms").update({ status: 'crafting', current_turn_player_id: nextPlayer.id }).eq("id", room.id);
     } else {
       await supabase.from("rooms").update({ current_turn_player_id: nextPlayer.id }).eq("id", room.id);
     }
   };
 
   // ==========================================
+  // LÓGICA DO MERCADO NEGRO (CRAFTING)
+  // ==========================================
+  
+  // Quando a loja abre, cada jogador gera sua própria vitrine de 3 itens
+  useEffect(() => {
+    if (room?.status === 'crafting' && me && !me.has_finished_crafting && (!me.shop_slots || me.shop_slots.length === 0)) {
+      const shuffled = [...SHOP_ITEMS].sort(() => 0.5 - Math.random());
+      const selectedIds = shuffled.slice(0, 3).map(item => item.id);
+      supabase.from("players").update({ shop_slots: selectedIds }).eq("id", me.id).then();
+    }
+  }, [room?.status, me]);
+
+  const handleBuyItem = async (item: typeof SHOP_ITEMS[0]) => {
+    if (me.greens < item.cost.green || me.blues < item.cost.blue || me.batteries < item.cost.yellow) return;
+    if (isProcessing) return;
+    setIsProcessing(true);
+    try {
+      const newInventory = [...(me.inventory || []), item.id];
+      const newShopSlots = me.shop_slots.filter((id: string) => id !== item.id);
+      
+      await supabase.from("players").update({
+        greens: me.greens - item.cost.green, blues: me.blues - item.cost.blue, batteries: me.batteries - item.cost.yellow,
+        inventory: newInventory, shop_slots: newShopSlots
+      }).eq("id", me.id);
+    } finally { setIsProcessing(false); }
+  };
+
+  const handleFinishCrafting = async () => {
+    if (isProcessing) return;
+    setIsProcessing(true);
+    try {
+      await supabase.from("players").update({ has_finished_crafting: true }).eq("id", me.id);
+
+      // Verifica se fui o último a terminar
+      const updatedPlayers = players.map(p => p.id === me.id ? { ...p, has_finished_crafting: true } : p);
+      const aliveP = updatedPlayers.filter(p => p.hp > 0);
+      const allFinished = aliveP.every(p => p.has_finished_crafting);
+
+      if (allFinished) {
+        await supabase.from("rooms").update({ status: 'playing', round_count: room.round_count + 1 }).eq("id", room.id);
+        for (const p of aliveP) {
+          await supabase.from("players").update({ has_finished_crafting: false, shop_slots: [] }).eq("id", p.id);
+        }
+      }
+    } finally { setIsProcessing(false); }
+  };
+
+  // ==========================================
   // RENDERIZAÇÃO DAS TELAS
   // ==========================================
-  if (loading) return <div className={`min-h-screen bg-[#0a0a0a] flex items-center justify-center text-[rgba(255,255,255,0.5)] ${inter.className}`}>Conectando aos servidores...</div>;
+  if (loading) return <div className={`min-h-screen bg-[#0a0a0a] flex items-center justify-center text-[rgba(255,255,255,0.5)] ${inter.className}`}>Conectando...</div>;
+  if (errorMsg || !room || !me) return <div className="text-white text-center mt-20">{errorMsg || "Erro."}</div>;
 
-  if (errorMsg || !room || !me) {
-    return (
-      <main className={`min-h-screen bg-[#0a0a0a] text-white flex flex-col items-center justify-center p-6 text-center ${inter.className}`}>
-        <h1 className={`${playfair.className} text-4xl text-red-500 mb-4`}>Sessão Interrompida</h1>
-        <p className="text-[rgba(255,255,255,0.6)] max-w-md mb-8">{errorMsg || "Não foi possível carregar os dados da sala."}</p>
-        <button onClick={() => router.push("/")} className="bg-white text-black px-8 py-3 rounded-[6px] font-medium hover:bg-gray-200 transition-all">Voltar para o Início</button>
-      </main>
-    );
-  }
-
-  // TELA 1: LOBBY
   const currentStatus = room.status || 'lobby';
+
+  // ==========================================
+  // TELA 1: LOBBY
+  // ==========================================
   if (currentStatus === 'lobby') {
     return (
       <main className={`min-h-screen bg-[#0a0a0a] text-white p-6 md:p-12 flex flex-col items-center justify-center relative ${inter.className}`}>
-        <button onClick={handleQuit} className="absolute top-6 left-6 text-xs text-red-500 border border-red-500/30 px-4 py-2 rounded-[6px] hover:bg-red-500/10 transition-all uppercase tracking-wider">Desconectar</button>
+        <button onClick={handleQuit} className="absolute top-6 left-6 text-xs text-red-500 border border-red-500/30 px-4 py-2 rounded hover:bg-red-500/10 uppercase">Sair</button>
         <div className="max-w-md w-full bg-[#111111] border border-[rgba(255,255,255,0.07)] rounded-[10px] p-8 text-center mt-10">
           <p className="text-[11px] tracking-[0.08em] text-[rgba(255,255,255,0.4)] uppercase mb-2">Código da Sala</p>
           <h1 className={`${playfair.className} text-5xl text-[#d4a853] tracking-tight mb-8`}>{room.code}</h1>
           <div className="flex flex-col gap-3 mb-8">
-            <h3 className="text-[13px] text-left text-[rgba(255,255,255,0.5)] border-b border-[rgba(255,255,255,0.07)] pb-2 mb-2">Jogadores Conectados ({players.length})</h3>
+            <h3 className="text-[13px] text-left text-[rgba(255,255,255,0.5)] border-b border-[rgba(255,255,255,0.07)] pb-2 mb-2">Jogadores ({players.length})</h3>
             {players.map(p => (
               <div key={p.id} className="flex justify-between items-center bg-[#0a0a0a] p-3 rounded-[6px] border border-[rgba(255,255,255,0.02)]">
-                <span className="font-medium text-[15px]">{p.name} {p.id === me.id && "(Você)"}</span>
-                <span className={`text-xs px-2 py-1 rounded-[4px] ${p.is_ready ? 'bg-green-900/30 text-green-500' : 'bg-[#111111] text-[rgba(255,255,255,0.4)]'}`}>
-                  {p.is_ready ? 'PRONTO' : 'AGUARDANDO'}
-                </span>
+                <span className="font-medium text-[15px]">{p.name}</span>
+                <span className={`text-xs px-2 py-1 rounded-[4px] ${p.is_ready ? 'bg-green-900/30 text-green-500' : 'bg-[#111111] text-[rgba(255,255,255,0.4)]'}`}>{p.is_ready ? 'PRONTO' : 'AGUARDANDO'}</span>
               </div>
             ))}
           </div>
-          <button onClick={handleToggleReady} disabled={isProcessing} className={`w-full h-[52px] font-medium text-[15px] rounded-[6px] transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed ${me.is_ready ? 'bg-[#1a1a1a] text-white border border-[rgba(255,255,255,0.1)] hover:bg-[#222]' : 'bg-white text-[#0a0a0a] hover:bg-gray-200'}`}>
+          <button onClick={handleToggleReady} disabled={isProcessing} className={`w-full h-[52px] font-medium text-[15px] rounded-[6px] transition-all ${me.is_ready ? 'bg-[#1a1a1a] text-white border border-[rgba(255,255,255,0.1)]' : 'bg-white text-[#0a0a0a]'}`}>
             {isProcessing ? 'Processando...' : (me.is_ready ? 'Cancelar Pronto' : 'Estou Pronto')}
           </button>
         </div>
@@ -364,18 +373,96 @@ export default function RoomPage() {
     );
   }
 
-  // TELA 2: JOGO BASE
+  // ==========================================
+  // TELA 2.5: MERCADO NEGRO (CRAFTING)
+  // ==========================================
+  if (currentStatus === 'crafting') {
+    const myShopItems = SHOP_ITEMS.filter(i => (me.shop_slots || []).includes(i.id));
+
+    return (
+      <main className={`min-h-screen bg-[#0a0a0a] text-white p-6 md:p-12 flex flex-col items-center ${inter.className}`}>
+        <div className="w-full max-w-4xl flex justify-between items-center mb-10 border-b border-[rgba(255,255,255,0.07)] pb-6">
+          <div>
+            <p className="text-[11px] tracking-[0.08em] text-[#d4a853] uppercase mb-1">Fim da Rodada {room.round_count}</p>
+            <h1 className={`${playfair.className} text-4xl text-white tracking-tight`}>Mercado Negro</h1>
+          </div>
+          <div className="flex gap-4 text-sm font-medium bg-[#111111] p-3 rounded-[6px] border border-[rgba(255,255,255,0.05)]">
+            <span className="text-[rgba(255,255,255,0.4)] mr-2 text-xs uppercase tracking-widest mt-0.5">Seu Cofre:</span>
+            <span className="text-green-500">{me.greens} PCB</span>
+            <span className="text-blue-500">{me.blues} Blue</span>
+            <span className="text-yellow-500">{me.batteries} Bat</span>
+          </div>
+        </div>
+
+        {me.has_finished_crafting ? (
+          <div className="flex-1 flex flex-col items-center justify-center text-center">
+            <div className="w-10 h-10 border-2 border-[#d4a853] border-t-transparent rounded-full animate-spin mb-6"></div>
+            <h2 className={`${playfair.className} text-2xl text-[rgba(255,255,255,0.8)]`}>Transações Concluídas</h2>
+            <p className="text-[rgba(255,255,255,0.4)] mt-2">Aguardando os outros jogadores terminarem as compras...</p>
+          </div>
+        ) : (
+          <div className="w-full max-w-4xl flex flex-col">
+            <p className="text-[rgba(255,255,255,0.5)] mb-6 text-center">Gaste seus recursos para craftar hardwares ilegais. Eles ficarão no seu inventário para uso futuro.</p>
+            
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
+              {myShopItems.map(item => {
+                const canAfford = me.greens >= item.cost.green && me.blues >= item.cost.blue && me.batteries >= item.cost.yellow;
+                
+                return (
+                  <div key={item.id} className="bg-[#111111] border border-[rgba(255,255,255,0.07)] rounded-[10px] p-6 flex flex-col">
+                    <div className="flex justify-between items-start mb-4">
+                      <h3 className="font-medium text-lg text-[#d4a853]">{item.name}</h3>
+                      <span className="text-[10px] uppercase tracking-widest bg-[#0a0a0a] px-2 py-1 rounded text-[rgba(255,255,255,0.5)]">{item.type}</span>
+                    </div>
+                    
+                    <p className="text-sm text-[rgba(255,255,255,0.7)] flex-1 min-h-[60px] leading-relaxed">{item.desc}</p>
+                    
+                    <div className="mt-4 pt-4 border-t border-[rgba(255,255,255,0.05)]">
+                      <p className="text-[10px] uppercase tracking-widest text-[rgba(255,255,255,0.4)] mb-2">Custo de Fabricação</p>
+                      <div className="flex gap-3 text-sm font-medium mb-6">
+                        {item.cost.green > 0 && <span className={me.greens >= item.cost.green ? 'text-green-500' : 'text-green-900'}>{item.cost.green} PCB</span>}
+                        {item.cost.blue > 0 && <span className={me.blues >= item.cost.blue ? 'text-blue-500' : 'text-blue-900'}>{item.cost.blue} Blue</span>}
+                        {item.cost.yellow > 0 && <span className={me.batteries >= item.cost.yellow ? 'text-yellow-500' : 'text-yellow-900'}>{item.cost.yellow} Bat</span>}
+                      </div>
+                      
+                      <button 
+                        onClick={() => handleBuyItem(item)} disabled={!canAfford || isProcessing}
+                        className={`w-full py-3 rounded-[6px] text-sm font-medium transition-all ${canAfford ? 'bg-white text-black hover:bg-gray-200 active:scale-[0.98]' : 'bg-[#0f0f0f] text-[rgba(255,255,255,0.2)] border border-[rgba(255,255,255,0.05)] cursor-not-allowed'}`}
+                      >
+                        {canAfford ? 'Fabricar Item' : 'Recursos Insuficientes'}
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+              {myShopItems.length === 0 && (
+                <div className="col-span-3 text-center py-20 text-[rgba(255,255,255,0.3)] border border-dashed border-[rgba(255,255,255,0.1)] rounded-[10px]">
+                  Sua vitrine está vazia.
+                </div>
+              )}
+            </div>
+
+            <button onClick={handleFinishCrafting} disabled={isProcessing} className="self-center bg-[#d4a853] text-black px-12 py-4 rounded-[6px] font-medium hover:bg-[#e0b767] transition-all text-lg active:scale-[0.98] shadow-[0_0_20px_rgba(212,168,83,0.2)]">
+              {isProcessing ? 'Processando...' : 'Finalizar Compras'}
+            </button>
+          </div>
+        )}
+      </main>
+    );
+  }
+
+  // ==========================================
+  // TELA 3: JOGO BASE
+  // ==========================================
   return (
     <main className={`min-h-screen bg-[#0a0a0a] text-white p-6 md:p-12 ${inter.className}`}>
-      
       {isGameOver && (
         <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center backdrop-blur-sm">
           <div className="text-center">
             <h1 className={`${playfair.className} text-6xl text-[#d4a853] mb-4`}>Sobrevivente</h1>
             <p className="text-white text-lg mb-8">{alivePlayers[0]?.name} venceu a partida!</p>
             <div className="flex gap-4 justify-center">
-              <button onClick={handleReturnToLobby} disabled={isProcessing} className="bg-[#d4a853] text-black px-6 py-3 rounded-[6px] font-medium hover:bg-[#e0b767] transition-all">Jogar Novamente</button>
-              <button onClick={handleQuit} disabled={isProcessing} className="bg-transparent border border-[rgba(255,255,255,0.2)] text-white px-6 py-3 rounded-[6px] font-medium hover:bg-[rgba(255,255,255,0.05)] transition-all">Sair</button>
+              <button onClick={handleReturnToLobby} disabled={isProcessing} className="bg-[#d4a853] text-black px-6 py-3 rounded hover:bg-[#e0b767]">Jogar Novamente</button>
             </div>
           </div>
         </div>
@@ -383,10 +470,10 @@ export default function RoomPage() {
 
       <header className="max-w-5xl mx-auto flex items-end justify-between border-b border-[rgba(255,255,255,0.07)] pb-6 mb-10">
         <div>
-          <p className="text-[11px] tracking-[0.08em] text-[rgba(255,255,255,0.4)] uppercase mb-1">Partida em Andamento</p>
+          <p className="text-[11px] tracking-[0.08em] text-[#d4a853] uppercase mb-1">Rodada {room.round_count}</p>
           <div className="flex items-center gap-4">
             <h1 className={`${playfair.className} text-3xl text-white tracking-tight`}>Sala <em className="text-[#d4a853] italic not-italic-numbers">{room.code}</em></h1>
-            <button onClick={handleQuit} disabled={isProcessing} className="text-[10px] text-red-500 border border-red-500/30 px-3 py-1 rounded-[4px] hover:bg-red-500/10 uppercase tracking-widest mt-2">Sair / Desistir</button>
+            <button onClick={handleQuit} className="text-[10px] text-red-500 border border-red-500/30 px-3 py-1 rounded hover:bg-red-500/10 uppercase mt-2">Sair</button>
           </div>
         </div>
         <div className="text-right">
@@ -423,21 +510,14 @@ export default function RoomPage() {
               
               {!isMyTurn && activePlayer && !onlineUsers.includes(activePlayer.id) && (
                 <div className="w-full max-w-md mt-4 p-4 border border-red-500/30 bg-red-900/10 rounded-[6px] text-center">
-                  <p className="text-sm text-red-400 mb-3">Este jogador perdeu a conexão.</p>
-                  <button onClick={() => handleKickOffline(activePlayer)} disabled={isProcessing} className="bg-red-500/20 text-red-500 border border-red-500/50 px-4 py-2 rounded hover:bg-red-500/40 text-xs uppercase tracking-wider w-full">
-                    Expulsar e Pular Turno
-                  </button>
+                  <button onClick={() => handleKickOffline(activePlayer)} className="bg-red-500/20 text-red-500 px-4 py-2 rounded text-xs uppercase w-full">Expulsar Offline</button>
                 </div>
               )}
 
               {isMyTurn && (
                 <div className="flex gap-4 w-full max-w-md mt-2">
-                  <button onClick={handleDraw} disabled={isProcessing} className="flex-1 h-[52px] bg-white text-[#0a0a0a] font-medium text-[15px] rounded-[6px] hover:bg-gray-200 active:scale-[0.99] disabled:opacity-30 disabled:cursor-not-allowed transition-all">
-                    {isProcessing ? 'Aguarde...' : 'Sacar'}
-                  </button>
-                  <button onClick={handlePassTurn} disabled={me?.forced_draws > 0 || isProcessing} className="flex-1 h-[52px] bg-[#0f0f0f] border border-[rgba(255,255,255,0.12)] text-white font-medium text-[15px] rounded-[6px] hover:border-[rgba(255,255,255,0.35)] active:scale-[0.99] disabled:opacity-30 disabled:cursor-not-allowed transition-all">
-                    {isProcessing ? 'Aguarde...' : 'Passar & Guardar'}
-                  </button>
+                  <button onClick={handleDraw} disabled={isProcessing} className="flex-1 h-[52px] bg-white text-[#0a0a0a] font-medium rounded hover:bg-gray-200">Sacar</button>
+                  <button onClick={handlePassTurn} disabled={me?.forced_draws > 0 || isProcessing} className="flex-1 h-[52px] bg-[#0f0f0f] border border-[rgba(255,255,255,0.12)] text-white font-medium rounded hover:border-[rgba(255,255,255,0.35)]">Passar</button>
                 </div>
               )}
             </>
@@ -445,12 +525,13 @@ export default function RoomPage() {
         </div>
 
         <div className="flex flex-col gap-4">
-          <h3 className="text-[11px] tracking-[0.08em] text-[rgba(255,255,255,0.4)] uppercase mb-2">Rede</h3>
+          <h3 className="text-[11px] tracking-[0.08em] text-[rgba(255,255,255,0.4)] uppercase mb-2">Rede de Jogadores</h3>
           {players.map((p) => {
             const pIsActive = room?.current_turn_player_id === p.id;
             const pIsDead = p.hp <= 0;
-            // Ele é considerado offline se a id dele não está no onlineUsers E se ele não sou eu mesmo (pra evitar bugs de delay inicial)
             const isOffline = !onlineUsers.includes(p.id) && p.id !== me.id;
+            // Traduz IDs de inventário para nomes para exibir
+            const invNames = (p.inventory || []).map((id: string) => SHOP_ITEMS.find(i => i.id === id)?.name || id);
 
             return (
               <div key={p.id} className={`bg-[#111111] border ${pIsActive && !pIsDead ? 'border-[#d4a853]' : 'border-[rgba(255,255,255,0.07)]'} rounded-[10px] p-4 relative overflow-hidden ${pIsDead ? 'opacity-30 grayscale' : ''}`}>
@@ -459,17 +540,29 @@ export default function RoomPage() {
                 <div className="flex justify-between items-center mb-3 pl-2">
                   <div className="flex items-center gap-2">
                     <span className="font-medium text-[15px]">{p.name}</span>
-                    {isOffline && !pIsDead && <span className="text-[9px] bg-red-900/50 text-red-400 px-1.5 py-0.5 rounded border border-red-500/20">OFFLINE</span>}
+                    {isOffline && !pIsDead && <span className="text-[9px] bg-red-900/50 text-red-400 px-1.5 py-0.5 rounded">OFF</span>}
                     {!isOffline && !pIsDead && <span className="w-2 h-2 rounded-full bg-green-500"></span>}
                   </div>
-                  <span className="text-sm bg-[#0a0a0a] px-2 py-1 rounded-[4px] border border-[rgba(255,255,255,0.05)] text-white">HP: {p.hp}</span>
+                  <span className="text-sm bg-[#0a0a0a] px-2 py-1 rounded border border-[rgba(255,255,255,0.05)]">HP: {p.hp}</span>
                 </div>
                 
-                <div className="grid grid-cols-3 gap-2 text-center text-xs pl-2">
-                  <div className="bg-[#0a0a0a] p-1 rounded border border-[rgba(255,255,255,0.02)] text-green-500">{p.greens}</div>
-                  <div className="bg-[#0a0a0a] p-1 rounded border border-[rgba(255,255,255,0.02)] text-blue-500">{p.blues}</div>
-                  <div className="bg-[#0a0a0a] p-1 rounded border border-[rgba(255,255,255,0.02)] text-yellow-500">{p.batteries}</div>
+                <div className="grid grid-cols-3 gap-2 text-center text-xs pl-2 mb-3">
+                  <div className="bg-[#0a0a0a] p-1 rounded text-green-500">{p.greens}</div>
+                  <div className="bg-[#0a0a0a] p-1 rounded text-blue-500">{p.blues}</div>
+                  <div className="bg-[#0a0a0a] p-1 rounded text-yellow-500">{p.batteries}</div>
                 </div>
+
+                {/* Exibição do Inventário de Itens Especiais do Jogador */}
+                {invNames.length > 0 && (
+                  <div className="pl-2 mt-2 pt-2 border-t border-[rgba(255,255,255,0.05)]">
+                    <p className="text-[9px] text-[rgba(255,255,255,0.4)] uppercase tracking-wider mb-1">Inventário de Hardwares</p>
+                    <div className="flex flex-wrap gap-1">
+                      {invNames.map((name: string, i: number) => (
+                        <span key={i} className="text-[10px] bg-[rgba(212,168,83,0.1)] text-[#d4a853] border border-[#d4a853]/30 px-1.5 py-0.5 rounded">{name}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )
           })}
