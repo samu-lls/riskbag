@@ -22,6 +22,9 @@ export default function RoomPage() {
   const [me, setMe] = useState<any>(null);
   const [room, setRoom] = useState<any>(null);
   const [players, setPlayers] = useState<any[]>([]);
+  
+  // O NOSSO CADEADO ANTI-SPAM DE CLIQUES
+  const [isProcessing, setIsProcessing] = useState(false);
 
   useEffect(() => {
     if (hasInitialized.current) return;
@@ -118,27 +121,34 @@ export default function RoomPage() {
   // LÓGICA DO LOBBY
   // ==========================================
   const handleToggleReady = async () => {
-    const newReadyState = !me.is_ready;
-    await supabase.from("players").update({ is_ready: newReadyState }).eq("id", me.id);
+    if (isProcessing) return;
+    setIsProcessing(true);
+    
+    try {
+      const newReadyState = !me.is_ready;
+      await supabase.from("players").update({ is_ready: newReadyState }).eq("id", me.id);
 
-    const updatedPlayers = players.map(p => p.id === me.id ? { ...p, is_ready: newReadyState } : p);
-    const allReady = updatedPlayers.length > 1 && updatedPlayers.every(p => p.is_ready);
+      const updatedPlayers = players.map(p => p.id === me.id ? { ...p, is_ready: newReadyState } : p);
+      const allReady = updatedPlayers.length > 1 && updatedPlayers.every(p => p.is_ready);
 
-    if (allReady && room.status === 'lobby') {
-      const firstPlayer = updatedPlayers[0];
-      await supabase.from("rooms").update({ 
-        status: 'playing',
-        current_turn_player_id: firstPlayer.id,
-        round_count: 1
-      }).eq("id", room.id);
-    } else if (updatedPlayers.length === 1 && newReadyState) {
-        alert("Aguarde mais jogadores para iniciar a partida.");
-        await supabase.from("players").update({ is_ready: false }).eq("id", me.id);
+      if (allReady && room.status === 'lobby') {
+        const firstPlayer = updatedPlayers[0];
+        await supabase.from("rooms").update({ 
+          status: 'playing',
+          current_turn_player_id: firstPlayer.id,
+          round_count: 1
+        }).eq("id", room.id);
+      } else if (updatedPlayers.length === 1 && newReadyState) {
+          alert("Aguarde mais jogadores para iniciar a partida.");
+          await supabase.from("players").update({ is_ready: false }).eq("id", me.id);
+      }
+    } finally {
+      setIsProcessing(false);
     }
   };
 
   // ==========================================
-  // LÓGICA DE JOGO BASE (MOTOR CORRIGIDO)
+  // LÓGICA DE JOGO BASE (MOTOR BLINDADO)
   // ==========================================
   const isMyTurn = room?.current_turn_player_id === me?.id;
   const amIDead = me?.hp <= 0;
@@ -157,83 +167,99 @@ export default function RoomPage() {
   const activePlayer = players.find(p => p.id === room?.current_turn_player_id);
 
   const handleDraw = async () => {
-    if (!isMyTurn || amIDead || isGameOver) return;
-    const totalInBag = room.bag_greens + room.bag_blues + room.bag_reds + room.bag_batteries + room.bag_viruses;
-    if (totalInBag <= 0) return alert("O Saco está vazio!");
+    // A trava que impede duplo clique
+    if (!isMyTurn || amIDead || isGameOver || isProcessing) return;
+    setIsProcessing(true);
 
-    // PROTEÇÃO ABSOLUTA DE HP: Busca no banco para evitar delay de cliques rápidos
-    const { data: dbPlayer } = await supabase.from("players").select("hp").eq("id", me.id).single();
-    let currentHp = dbPlayer?.hp || me.hp;
-
-    const roll = Math.random() * totalInBag;
-    let newBagGreens = room.bag_greens, newBagBlues = room.bag_blues, newBagReds = room.bag_reds;
-    let newBagBatteries = room.bag_batteries, newBagViruses = room.bag_viruses;
-    
-    let newTurnGreens = me.turn_greens, newTurnBlues = me.turn_blues, newRedsInTurn = me.reds_in_turn;
-    let newTurnBatteries = me.turn_batteries, newVirusesInTurn = me.viruses_in_turn;
-    
-    let newForcedDraws = Math.max(0, me.forced_draws - 1);
-    
-    let isExplosion = false;
-    let isVirusSkip = false;
-
-    // Sorteio de Itens
-    if (roll < newBagGreens) { newBagGreens--; newTurnGreens++; }
-    else if (roll < newBagGreens + newBagBlues) { newBagBlues--; newTurnBlues++; }
-    else if (roll < newBagGreens + newBagBlues + newBagBatteries) { newBagBatteries--; newTurnBatteries++; }
-    else if (roll < newBagGreens + newBagBlues + newBagBatteries + newBagViruses) { 
-      newBagViruses--; newVirusesInTurn++;
-      if (newVirusesInTurn >= 2) isVirusSkip = true;
-    } else {
-      newBagReds--; newRedsInTurn++;
-      if (newRedsInTurn >= 2) {
-        isExplosion = true; 
-        currentHp--; // Recebe o dano no HP verificado
+    try {
+      const totalInBag = room.bag_greens + room.bag_blues + room.bag_reds + room.bag_batteries + room.bag_viruses;
+      if (totalInBag <= 0) {
+        alert("O Saco está vazio!");
+        return;
       }
-    }
 
-    // REGRA DE PUNIÇÃO: Devolve TUDO o que estava na mão para o saco se perder a vez
-    if (isExplosion || isVirusSkip) {
-      newBagGreens += newTurnGreens;
-      newBagBlues += newTurnBlues;
-      newBagBatteries += newTurnBatteries;
-      newBagReds += newRedsInTurn;
-      newBagViruses += newVirusesInTurn;
+      const { data: dbPlayer } = await supabase.from("players").select("hp").eq("id", me.id).single();
+      let currentHp = dbPlayer?.hp || me.hp;
 
-      newTurnGreens = 0; newTurnBlues = 0; newTurnBatteries = 0; newRedsInTurn = 0; newVirusesInTurn = 0; newForcedDraws = 0; 
-    }
+      const roll = Math.random() * totalInBag;
+      let newBagGreens = room.bag_greens, newBagBlues = room.bag_blues, newBagReds = room.bag_reds;
+      let newBagBatteries = room.bag_batteries, newBagViruses = room.bag_viruses;
+      
+      let newTurnGreens = me.turn_greens, newTurnBlues = me.turn_blues, newRedsInTurn = me.reds_in_turn;
+      let newTurnBatteries = me.turn_batteries, newVirusesInTurn = me.viruses_in_turn;
+      
+      let newForcedDraws = Math.max(0, me.forced_draws - 1);
+      
+      let isExplosion = false;
+      let isVirusSkip = false;
 
-    // Salva no banco de forma segura
-    await supabase.from("rooms").update({ 
-      bag_greens: newBagGreens, bag_blues: newBagBlues, bag_reds: newBagReds, bag_batteries: newBagBatteries, bag_viruses: newBagViruses 
-    }).eq("id", room.id);
+      if (roll < newBagGreens) { newBagGreens--; newTurnGreens++; }
+      else if (roll < newBagGreens + newBagBlues) { newBagBlues--; newTurnBlues++; }
+      else if (roll < newBagGreens + newBagBlues + newBagBatteries) { newBagBatteries--; newTurnBatteries++; }
+      else if (roll < newBagGreens + newBagBlues + newBagBatteries + newBagViruses) { 
+        newBagViruses--; newVirusesInTurn++;
+        if (newVirusesInTurn >= 2) isVirusSkip = true;
+      } else {
+        newBagReds--; newRedsInTurn++;
+        if (newRedsInTurn >= 2) {
+          isExplosion = true; 
+          currentHp--; 
+        }
+      }
 
-    await supabase.from("players").update({ 
-      hp: currentHp, turn_greens: newTurnGreens, turn_blues: newTurnBlues, turn_batteries: newTurnBatteries, reds_in_turn: newRedsInTurn, viruses_in_turn: newVirusesInTurn, forced_draws: newForcedDraws 
-    }).eq("id", me.id);
+      if (isExplosion || isVirusSkip) {
+        newBagGreens += newTurnGreens;
+        newBagBlues += newTurnBlues;
+        newBagBatteries += newTurnBatteries;
+        newBagReds += newRedsInTurn;
+        newBagViruses += newVirusesInTurn;
 
-    // Finaliza as ações
-    if (isExplosion) {
-      alert("💥 CURTO-CIRCUITO! 2º Curto. 1 Dano recebido. Todos os itens que você sacou voltaram para o Saco.");
-      if (currentHp <= 0) {
-         const nextP = getNextAlivePlayer();
-         if (nextP) await supabase.from("rooms").update({ current_turn_player_id: nextP.id }).eq("id", room.id);
-      } else { await handlePassTurn(true); }
-    } else if (isVirusSkip) {
-      alert("🦠 VÍRUS DETECTADO! 2º Vírus. Turno perdido (sem dano). Todos os itens que você sacou voltaram para o Saco.");
-      await handlePassTurn(true);
+        newTurnGreens = 0; newTurnBlues = 0; newTurnBatteries = 0; newRedsInTurn = 0; newVirusesInTurn = 0; newForcedDraws = 0; 
+      }
+
+      await supabase.from("rooms").update({ 
+        bag_greens: newBagGreens, bag_blues: newBagBlues, bag_reds: newBagReds, bag_batteries: newBagBatteries, bag_viruses: newBagViruses 
+      }).eq("id", room.id);
+
+      await supabase.from("players").update({ 
+        hp: currentHp, turn_greens: newTurnGreens, turn_blues: newTurnBlues, turn_batteries: newTurnBatteries, reds_in_turn: newRedsInTurn, viruses_in_turn: newVirusesInTurn, forced_draws: newForcedDraws 
+      }).eq("id", me.id);
+
+      if (isExplosion) {
+        alert("💥 CURTO-CIRCUITO! 2º Curto. 1 Dano recebido. Todos os itens que você sacou voltaram para o Saco.");
+        if (currentHp <= 0) {
+           const nextP = getNextAlivePlayer();
+           if (nextP) await supabase.from("rooms").update({ current_turn_player_id: nextP.id }).eq("id", room.id);
+        } else { await executePassTurn(true); }
+      } else if (isVirusSkip) {
+        alert("🦠 VÍRUS DETECTADO! 2º Vírus. Turno perdido (sem dano). Todos os itens que você sacou voltaram para o Saco.");
+        await executePassTurn(true);
+      }
+    } finally {
+      setIsProcessing(false);
     }
   };
 
-  const handlePassTurn = async (isFromExplosion = false) => {
-    if (!isMyTurn || amIDead || isGameOver) return;
-    if (!isFromExplosion && me.forced_draws > 0) return alert(`Saque mais ${me.forced_draws} vez(es)!`);
+  const handlePassTurn = async () => {
+    if (!isMyTurn || amIDead || isGameOver || isProcessing) return;
+    setIsProcessing(true);
+    try {
+      await executePassTurn(false);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const executePassTurn = async (isFromExplosion = false) => {
+    if (!isFromExplosion && me.forced_draws > 0) {
+      alert(`Saque mais ${me.forced_draws} vez(es)!`);
+      return;
+    }
 
     const nextPlayer = getNextAlivePlayer();
     if (!nextPlayer) return;
 
     if (!isFromExplosion) {
-      // REGRA DE GUARDAR (Passou normal): Devolve SÓ os perigos pro saco. Guarda os materiais no cofre.
       const returnReds = me.reds_in_turn;
       const returnViruses = me.viruses_in_turn;
 
@@ -250,7 +276,6 @@ export default function RoomPage() {
         turn_greens: 0, turn_blues: 0, turn_batteries: 0, reds_in_turn: 0, viruses_in_turn: 0 
       }).eq("id", me.id);
     } else {
-      // Se for explosão/vírus, a devolução já foi feita e a mão já foi zerada na função handleDraw.
       await supabase.from("rooms").update({ current_turn_player_id: nextPlayer.id }).eq("id", room.id);
     }
   };
@@ -295,9 +320,10 @@ export default function RoomPage() {
 
           <button 
             onClick={handleToggleReady}
-            className={`w-full h-[52px] font-medium text-[15px] rounded-[6px] transition-all active:scale-[0.99] ${me.is_ready ? 'bg-[#1a1a1a] text-white border border-[rgba(255,255,255,0.1)] hover:bg-[#222]' : 'bg-white text-[#0a0a0a] hover:bg-gray-200'}`}
+            disabled={isProcessing}
+            className={`w-full h-[52px] font-medium text-[15px] rounded-[6px] transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed ${me.is_ready ? 'bg-[#1a1a1a] text-white border border-[rgba(255,255,255,0.1)] hover:bg-[#222]' : 'bg-white text-[#0a0a0a] hover:bg-gray-200'}`}
           >
-            {me.is_ready ? 'Cancelar Pronto' : 'Estou Pronto'}
+            {isProcessing ? 'Processando...' : (me.is_ready ? 'Cancelar Pronto' : 'Estou Pronto')}
           </button>
           <p className="text-[11px] text-[rgba(255,255,255,0.3)] mt-4">A partida inicia quando todos estiverem prontos. (Mín. 2 jogadores)</p>
         </div>
@@ -359,8 +385,12 @@ export default function RoomPage() {
               )}
               
               <div className="flex gap-4 w-full max-w-md mt-2">
-                <button onClick={handleDraw} disabled={!isMyTurn} className="flex-1 h-[52px] bg-white text-[#0a0a0a] font-medium text-[15px] rounded-[6px] hover:bg-gray-200 active:scale-[0.99] disabled:opacity-10 disabled:cursor-not-allowed transition-all">Sacar</button>
-                <button onClick={() => handlePassTurn(false)} disabled={!isMyTurn || me?.forced_draws > 0} className="flex-1 h-[52px] bg-[#0f0f0f] border border-[rgba(255,255,255,0.12)] text-white font-medium text-[15px] rounded-[6px] hover:border-[rgba(255,255,255,0.35)] active:scale-[0.99] disabled:opacity-10 disabled:cursor-not-allowed transition-all">Passar & Guardar</button>
+                <button onClick={handleDraw} disabled={!isMyTurn || isProcessing} className="flex-1 h-[52px] bg-white text-[#0a0a0a] font-medium text-[15px] rounded-[6px] hover:bg-gray-200 active:scale-[0.99] disabled:opacity-30 disabled:cursor-not-allowed transition-all">
+                  {isProcessing ? 'Aguarde...' : 'Sacar'}
+                </button>
+                <button onClick={handlePassTurn} disabled={!isMyTurn || me?.forced_draws > 0 || isProcessing} className="flex-1 h-[52px] bg-[#0f0f0f] border border-[rgba(255,255,255,0.12)] text-white font-medium text-[15px] rounded-[6px] hover:border-[rgba(255,255,255,0.35)] active:scale-[0.99] disabled:opacity-30 disabled:cursor-not-allowed transition-all">
+                  {isProcessing ? 'Aguarde...' : 'Passar & Guardar'}
+                </button>
               </div>
             </>
           )}
