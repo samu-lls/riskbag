@@ -11,19 +11,19 @@ const playfair = Playfair_Display({ subsets: ["latin"], style: ["normal", "itali
 const inter = Inter({ subsets: ["latin"], weight: ["400", "500"] });
 
 // ==========================================
-// BANCO DE DADOS DE ITENS (MERCADO NEGRO) - BALANCEADO
+// BANCO DE DADOS DE ITENS (MERCADO NEGRO) - NOVO BALANCEAMENTO (Sempre exige Blueprint)
 // ==========================================
 const SHOP_ITEMS = [
-  { id: 'firewall', name: 'Firewall', type: 'defense', cost: { green: 2, blue: 0, yellow: 2 }, desc: 'Absorve 1 Dano letal ou ataque inimigo e quebra.' },
-  { id: 'patch', name: 'Patch de Seg.', type: 'heal', cost: { green: 1, blue: 0, yellow: 2 }, desc: 'Recupera +1 HP instantaneamente.' },
-  { id: 'vpn', name: 'VPN', type: 'utility', cost: { green: 1, blue: 1, yellow: 0 }, desc: 'Pula seu turno imediatamente com segurança.' },
-  { id: 'trojan', name: 'Trojan', type: 'attack', cost: { green: 2, blue: 0, yellow: 1 }, desc: 'Força um alvo a sacar 3 vezes no turno dele.' },
-  { id: 'phishing', name: 'Phishing', type: 'attack', cost: { green: 1, blue: 1, yellow: 1 }, desc: 'Rouba 2 itens do cofre de um inimigo.' },
-  { id: 'reboot', name: 'Reboot', type: 'utility', cost: { green: 0, blue: 0, yellow: 2 }, desc: 'Devolve 2 Curtos/Vírus da sua mão pro Saco.' },
-  { id: 'zeroday', name: 'Zero-Day', type: 'fatal', cost: { green: 1, blue: 2, yellow: 2 }, desc: 'Retira 1 HP do alvo instantaneamente.' },
+  { id: 'firewall', name: 'Firewall', type: 'defense', cost: { green: 2, blue: 1, yellow: 0 }, desc: 'Absorve 1 Dano letal ou ataque inimigo e quebra.' },
+  { id: 'patch', name: 'Patch de Seg.', type: 'heal', cost: { green: 0, blue: 1, yellow: 2 }, desc: 'Recupera +1 HP instantaneamente.' },
+  { id: 'vpn', name: 'VPN', type: 'utility', cost: { green: 1, blue: 1, yellow: 1 }, desc: 'Pula seu turno imediatamente com segurança.' },
+  { id: 'trojan', name: 'Trojan', type: 'attack', cost: { green: 2, blue: 1, yellow: 0 }, desc: 'Força um alvo a sacar 3 vezes no turno dele.' },
+  { id: 'phishing', name: 'Phishing', type: 'attack', cost: { green: 0, blue: 1, yellow: 2 }, desc: 'Rouba 2 itens do cofre de um inimigo.' },
+  { id: 'reboot', name: 'Reboot', type: 'utility', cost: { green: 1, blue: 1, yellow: 1 }, desc: 'Devolve 2 Curtos/Vírus da sua mão pro Saco.' },
+  { id: 'zeroday', name: 'Zero-Day', type: 'fatal', cost: { green: 1, blue: 1, yellow: 3 }, desc: 'Retira 1 HP do alvo instantaneamente.' },
   { id: 'ddos', name: 'DDoS Automático', type: 'fatal', cost: { green: 2, blue: 1, yellow: 2 }, desc: 'Aplica +2 Saques Obrigatórios em TODOS.' },
   { id: 'ransomware', name: 'Ransomware', type: 'fatal', cost: { green: 3, blue: 1, yellow: 2 }, desc: 'Rouba 1 HP do alvo (causa dano a ele e cura você).' },
-  { id: 'logicbomb', name: 'Bomba Lógica', type: 'fatal', cost: { green: 1, blue: 2, yellow: 2 }, desc: 'Causa 1 Dano a TODOS (incluindo você). Ignora Firewall.' }
+  { id: 'logicbomb', name: 'Bomba Lógica', type: 'fatal', cost: { green: 2, blue: 1, yellow: 3 }, desc: 'Causa 1 Dano a TODOS (incluindo você). Ignora Firewall.' }
 ];
 
 export default function RoomPage() {
@@ -44,6 +44,7 @@ export default function RoomPage() {
   const [targetingItem, setTargetingItem] = useState<string | null>(null);
   
   const [showGuide, setShowGuide] = useState(false);
+  const [showRules, setShowRules] = useState(false); // Modal de Regras
 
   useEffect(() => {
     if (hasInitialized.current) return;
@@ -57,21 +58,21 @@ export default function RoomPage() {
         if (roomError) throw new Error("Erro ao buscar sala: " + roomError.message);
         if (!roomData) {
           const { data: newRoom, error: insertRoomError } = await supabase.from("rooms").insert({ 
-            code: roomCode, status: 'lobby', bag_greens: 15, bag_blues: 10, bag_reds: 5, bag_batteries: 15, bag_viruses: 5
+            code: roomCode, status: 'lobby', bag_greens: 15, bag_blues: 10, bag_reds: 5, bag_batteries: 15, bag_viruses: 5, game_log: []
           }).select().single();
           if (insertRoomError) throw new Error("Erro ao criar sala.");
           roomData = newRoom;
         }
         
-        let { data: playerData, error: playerError } = await supabase.from("players").select("*").eq("room_id", roomData.id).eq("name", playerName).maybeSingle();
-        if (playerError) throw new Error("Erro de dados duplicados. Limpe o banco.");
-
+        // RECONEXÃO BLINDADA: Ignora maiúsculas/minúsculas e espaços extras
+        let { data: playerData, error: playerError } = await supabase.from("players").select("*").eq("room_id", roomData.id).ilike("name", playerName.trim()).maybeSingle();
+        
         if (!playerData) {
           if ((roomData.status || 'lobby') !== 'lobby') {
-            alert("Partida em andamento!"); router.push("/"); return;
+            alert("Partida em andamento! Você só pode reconectar se usar o nome exato com o qual entrou."); router.push("/"); return;
           }
           const { data: newPlayer, error: insertPlayerError } = await supabase.from("players").insert({
-            room_id: roomData.id, name: playerName, is_ready: false, inventory: [], shop_slots: []
+            room_id: roomData.id, name: playerName.trim(), is_ready: false, inventory: [], shop_slots: []
           }).select().single();
           if (insertPlayerError) throw new Error("Erro ao criar jogador.");
           playerData = newPlayer;
@@ -105,6 +106,18 @@ export default function RoomPage() {
   }, [roomCode, router]);
 
   // ==========================================
+  // LÓGICA DO LOG DE EVENTOS (TERMINAL)
+  // ==========================================
+  const writeLog = async (message: string) => {
+    try {
+      const { data: currentRoom } = await supabase.from("rooms").select("game_log, round_count").eq("id", room.id).single();
+      const currentLog = currentRoom?.game_log || [];
+      const newLog = [...currentLog, `[R${currentRoom.round_count}] ${message}`].slice(-40); // Guarda os últimos 40 eventos
+      await supabase.from("rooms").update({ game_log: newLog }).eq("id", room.id);
+    } catch (e) { console.error("Erro ao escrever log", e); }
+  };
+
+  // ==========================================
   // LÓGICA DE GERENCIAMENTO
   // ==========================================
   const handleQuit = async () => {
@@ -122,30 +135,39 @@ export default function RoomPage() {
         const nextPlayer = getNextAlivePlayer(me.id);
         if (nextPlayer) await supabase.from("rooms").update({ current_turn_player_id: nextPlayer.id }).eq("id", room.id);
       }
+      await writeLog(`${me.name} abandonou a partida.`);
       await supabase.from("players").update({ hp: 0 }).eq("id", me.id);
       router.push("/");
     } catch (e) { setIsProcessing(false); }
   };
 
   const handleKickOffline = async (targetPlayer: any) => {
-    if (!window.confirm(`Eliminar ${targetPlayer.name}?`)) return;
+    if (!window.confirm(`Eliminar ${targetPlayer.name} por inatividade?`)) return;
     setIsProcessing(true);
     try {
-      if (room.current_turn_player_id === targetPlayer.id && room.status === 'playing') {
+      if (room.current_turn_player_id === targetPlayer.id && (room.status === 'playing' || room.status === 'crafting')) {
         await supabase.from("rooms").update({
           bag_greens: room.bag_greens + targetPlayer.turn_greens, bag_blues: room.bag_blues + targetPlayer.turn_blues, bag_batteries: room.bag_batteries + targetPlayer.turn_batteries, bag_reds: room.bag_reds + targetPlayer.reds_in_turn, bag_viruses: room.bag_viruses + targetPlayer.viruses_in_turn
         }).eq("id", room.id);
         const nextPlayer = getNextAlivePlayer(targetPlayer.id);
-        if (nextPlayer) await supabase.from("rooms").update({ current_turn_player_id: nextPlayer.id }).eq("id", room.id);
+        if (nextPlayer && room.status === 'playing') {
+          await supabase.from("rooms").update({ current_turn_player_id: nextPlayer.id }).eq("id", room.id);
+        }
       }
+      await writeLog(`${targetPlayer.name} foi eliminado por inatividade.`);
       await supabase.from("players").update({ hp: 0 }).eq("id", targetPlayer.id);
+      
+      // Se for loja, tenta destravar a sala
+      if (room.status === 'crafting') {
+          handleFinishCrafting(true);
+      }
     } finally { setIsProcessing(false); }
   };
 
   const handleReturnToLobby = async () => {
     setIsProcessing(true);
     try {
-      await supabase.from("rooms").update({ status: 'lobby', bag_greens: 15, bag_blues: 10, bag_batteries: 15, bag_reds: 5, bag_viruses: 5, current_turn_player_id: null, round_count: 1 }).eq("id", room.id);
+      await supabase.from("rooms").update({ status: 'lobby', bag_greens: 15, bag_blues: 10, bag_batteries: 15, bag_reds: 5, bag_viruses: 5, current_turn_player_id: null, round_count: 1, game_log: [] }).eq("id", room.id);
       for (const p of players) {
         await supabase.from("players").update({ hp: 3, greens: 0, blues: 0, batteries: 0, turn_greens: 0, turn_blues: 0, turn_batteries: 0, reds_in_turn: 0, viruses_in_turn: 0, forced_draws: 0, is_ready: false, inventory: [], shop_slots: [], has_finished_crafting: false }).eq("id", p.id);
       }
@@ -174,7 +196,6 @@ export default function RoomPage() {
   const handleItemClick = (itemId: string) => {
     const itemDef = SHOP_ITEMS.find(i => i.id === itemId);
     if (itemDef?.type === 'defense') return; 
-    
     if (itemDef?.type === 'attack' || itemId === 'zeroday' || itemId === 'ransomware') {
       setTargetingItem(targetingItem === itemId ? null : itemId);
     } else {
@@ -196,6 +217,7 @@ export default function RoomPage() {
 
       let updatedMyInv = [...dbMe.inventory];
       updatedMyInv.splice(invIdx, 1);
+      const itemDef = SHOP_ITEMS.find(i => i.id === itemId);
 
       let targetDb = null;
       if (targetId) {
@@ -203,55 +225,41 @@ export default function RoomPage() {
         targetDb = t;
       }
 
+      await writeLog(`${me.name} usou o item [${itemDef?.name}].`);
+
       if (itemId === 'patch') {
         await supabase.from("players").update({ hp: dbMe.hp + 1, inventory: updatedMyInv }).eq("id", me.id);
         alert("🔧 Patch aplicado! +1 HP.");
-      
       } else if (itemId === 'vpn') {
         const nextPlayer = getNextAlivePlayer(me.id);
-        await supabase.from("rooms").update({
-            bag_reds: dbRoom.bag_reds + dbMe.reds_in_turn, bag_viruses: dbRoom.bag_viruses + dbMe.viruses_in_turn, current_turn_player_id: nextPlayer.id
-        }).eq("id", room.id);
-        await supabase.from("players").update({
-            greens: dbMe.greens + dbMe.turn_greens, blues: dbMe.blues + dbMe.turn_blues, batteries: dbMe.batteries + dbMe.turn_batteries,
-            turn_greens: 0, turn_blues: 0, turn_batteries: 0, reds_in_turn: 0, viruses_in_turn: 0, forced_draws: 0, inventory: updatedMyInv
-        }).eq("id", me.id);
+        await supabase.from("rooms").update({ bag_reds: dbRoom.bag_reds + dbMe.reds_in_turn, bag_viruses: dbRoom.bag_viruses + dbMe.viruses_in_turn, current_turn_player_id: nextPlayer.id }).eq("id", room.id);
+        await supabase.from("players").update({ greens: dbMe.greens + dbMe.turn_greens, blues: dbMe.blues + dbMe.turn_blues, batteries: dbMe.batteries + dbMe.turn_batteries, turn_greens: 0, turn_blues: 0, turn_batteries: 0, reds_in_turn: 0, viruses_in_turn: 0, forced_draws: 0, inventory: updatedMyInv }).eq("id", me.id);
         alert("🛡️ VPN ativada! Turno pulado com segurança.");
-      
       } else if (itemId === 'reboot') {
         let returnedReds = Math.min(2, dbMe.reds_in_turn);
         let returnedViruses = Math.min(2 - returnedReds, dbMe.viruses_in_turn);
         if (returnedReds === 0 && returnedViruses === 0) {
-            alert("Nenhuma ameaça em mãos para devolver.");
-            setIsProcessing(false); return;
+            alert("Nenhuma ameaça em mãos para devolver."); setIsProcessing(false); return;
         }
         await supabase.from("rooms").update({ bag_reds: dbRoom.bag_reds + returnedReds, bag_viruses: dbRoom.bag_viruses + returnedViruses }).eq("id", room.id);
         await supabase.from("players").update({ reds_in_turn: dbMe.reds_in_turn - returnedReds, viruses_in_turn: dbMe.viruses_in_turn - returnedViruses, inventory: updatedMyInv }).eq("id", me.id);
         alert("🔄 Reboot concluído! Ameaças devolvidas.");
-
       } else if (itemId === 'trojan' && targetDb) {
         await supabase.from("players").update({ forced_draws: targetDb.forced_draws + 3 }).eq("id", targetId);
         await supabase.from("players").update({ inventory: updatedMyInv }).eq("id", me.id);
         alert(`🐴 Trojan enviado! ${targetDb.name} sacará +3 vezes.`);
-
       } else if (itemId === 'phishing' && targetDb) {
         let pool = [];
         for(let i=0; i<targetDb.greens; i++) pool.push('green');
         for(let i=0; i<targetDb.blues; i++) pool.push('blue');
         for(let i=0; i<targetDb.batteries; i++) pool.push('yellow');
-        
         let stolen = { green: 0, blue: 0, yellow: 0 };
         for(let i=0; i<2; i++) {
-            if (pool.length > 0) {
-                let r = Math.floor(Math.random() * pool.length);
-                stolen[pool[r]]++;
-                pool.splice(r, 1);
-            }
+            if (pool.length > 0) { let r = Math.floor(Math.random() * pool.length); stolen[pool[r]]++; pool.splice(r, 1); }
         }
         await supabase.from("players").update({ greens: targetDb.greens - stolen.green, blues: targetDb.blues - stolen.blue, batteries: targetDb.batteries - stolen.yellow }).eq("id", targetId);
         await supabase.from("players").update({ greens: dbMe.greens + stolen.green, blues: dbMe.blues + stolen.blue, batteries: dbMe.batteries + stolen.yellow, inventory: updatedMyInv }).eq("id", me.id);
         alert(`🎣 Phishing com sucesso contra ${targetDb.name}.`);
-
       } else if (itemId === 'zeroday' && targetDb) {
         let targetInv = [...(targetDb.inventory || [])];
         const fwIdx = targetInv.indexOf('firewall');
@@ -259,13 +267,14 @@ export default function RoomPage() {
             targetInv.splice(fwIdx, 1);
             await supabase.from("players").update({ inventory: targetInv }).eq("id", targetId);
             await supabase.from("players").update({ inventory: updatedMyInv }).eq("id", me.id);
+            await writeLog(`O Firewall de ${targetDb.name} bloqueou o Zero-Day.`);
             alert(`Bloqueado! O Firewall de ${targetDb.name} salvou o HP dele.`);
         } else {
             await supabase.from("players").update({ hp: targetDb.hp - 1 }).eq("id", targetId);
             await supabase.from("players").update({ inventory: updatedMyInv }).eq("id", me.id);
+            await writeLog(`${targetDb.name} sofreu 1 Dano do Zero-Day.`);
             alert(`☠️ Zero-Day executado! ${targetDb.name} perdeu 1 HP.`);
         }
-
       } else if (itemId === 'ransomware' && targetDb) {
         let targetInv = [...(targetDb.inventory || [])];
         const fwIdx = targetInv.indexOf('firewall');
@@ -273,40 +282,35 @@ export default function RoomPage() {
             targetInv.splice(fwIdx, 1);
             await supabase.from("players").update({ inventory: targetInv }).eq("id", targetId);
             await supabase.from("players").update({ inventory: updatedMyInv }).eq("id", me.id);
+            await writeLog(`O Firewall de ${targetDb.name} bloqueou o Ransomware.`);
             alert(`Bloqueado! O Firewall de ${targetDb.name} defendeu o Ransomware.`);
         } else {
             await supabase.from("players").update({ hp: targetDb.hp - 1 }).eq("id", targetId);
             await supabase.from("players").update({ hp: dbMe.hp + 1, inventory: updatedMyInv }).eq("id", me.id);
+            await writeLog(`${me.name} sugou 1 HP de ${targetDb.name} com o Ransomware.`);
             alert(`🧛 Ransomware ativado! Você roubou 1 HP de ${targetDb.name}.`);
         }
-
       } else if (itemId === 'ddos') {
         const { data: allPlayers } = await supabase.from("players").select("*").eq("room_id", room.id);
         for(const p of allPlayers) {
-            if (p.id !== me.id && p.hp > 0) {
-                await supabase.from("players").update({ forced_draws: p.forced_draws + 2 }).eq("id", p.id);
-            }
+            if (p.id !== me.id && p.hp > 0) await supabase.from("players").update({ forced_draws: p.forced_draws + 2 }).eq("id", p.id);
         }
         await supabase.from("players").update({ inventory: updatedMyInv }).eq("id", me.id);
         alert("🌐 DDoS! Inimigos receberam +2 Saques Obrigatórios.");
-      
       } else if (itemId === 'logicbomb') {
         const { data: allPlayers } = await supabase.from("players").select("*").eq("room_id", room.id);
         for(const p of allPlayers) {
-            if (p.hp > 0 && p.id !== me.id) {
-                await supabase.from("players").update({ hp: p.hp - 1 }).eq("id", p.id);
-            }
+            if (p.hp > 0 && p.id !== me.id) await supabase.from("players").update({ hp: p.hp - 1 }).eq("id", p.id);
         }
         await supabase.from("players").update({ hp: dbMe.hp - 1, inventory: updatedMyInv }).eq("id", me.id);
+        await writeLog(`A Bomba Lógica explodiu! TODOS perderam 1 HP.`);
         alert("💣 Bomba Lógica! TODOS os jogadores (incluindo você) perderam 1 HP. Ignorou Firewalls.");
       }
-    } catch (err) {
-      console.error(err);
-    } finally { setIsProcessing(false); }
+    } catch (err) { console.error(err); } finally { setIsProcessing(false); }
   };
 
   // ==========================================
-  // MOTOR DE JOGO (DRAW & REFILL)
+  // MOTOR DE JOGO (DRAW & REFILL BALANCEADO)
   // ==========================================
   const handleDraw = async () => {
     if (!isMyTurn || amIDead || isGameOver || isProcessing) return;
@@ -340,10 +344,11 @@ export default function RoomPage() {
         if (newRedsInTurn >= 2) { isExplosion = true; currentHp--; }
       }
 
-      // SISTEMA ANTI-SOFTLOCK: Reposição
-      if (newBagGreens === 0) { newBagGreens += 10; alert("⚠️ A IA Injetou +10 PCBs de emergência no Saco."); }
-      if (newBagBlues === 0) { newBagBlues += 10; alert("⚠️ A IA Injetou +10 Blueprints de emergência no Saco."); }
-      if (newBagBatteries === 0) { newBagBatteries += 10; alert("⚠️ A IA Injetou +10 Baterias de emergência no Saco."); }
+      // SISTEMA ANTI-SOFTLOCK: Reposição Completa para manter a proporção
+      if (newBagGreens <= 0 || newBagBlues <= 0 || newBagBatteries <= 0) { 
+        newBagGreens += 6; newBagBlues += 4; newBagBatteries += 6; 
+        await writeLog(`A IA reabasteceu o Saco com materiais.`);
+      }
 
       let updatedMyInv = [...(dbMe.inventory || [])];
       let firewallTriggered = false;
@@ -368,16 +373,20 @@ export default function RoomPage() {
 
       if (isExplosion) {
         if (firewallTriggered) {
+            await writeLog(`${me.name} tirou 2 Curtos, mas o Firewall salvou sua vida!`);
             alert("🔥 FIREWALL ATIVADO! Você perdeu a mão para o Curto, mas o Firewall salvou seu HP.");
             await executePassTurn(true);
         } else {
+            await writeLog(`💥 ${me.name} tirou 2 Curtos, perdeu a mão e tomou 1 DANO!`);
             alert("💥 CURTO-CIRCUITO! Você perdeu 1 HP e a mão.");
             if (currentHp <= 0) {
+               await writeLog(`💀 ${me.name} FOI ELIMINADO!`);
                const nextP = getNextAlivePlayer();
                if (nextP) await checkRoundAndPass(nextP);
             } else { await executePassTurn(true); }
         }
       } else if (isVirusSkip) {
+        await writeLog(`🦠 ${me.name} detectou 2 Vírus e perdeu a vez.`);
         alert("🦠 VÍRUS! Turno perdido. Mão devolvida ao saco.");
         await executePassTurn(true);
       }
@@ -404,6 +413,7 @@ export default function RoomPage() {
         greens: dbMe.greens + dbMe.turn_greens, blues: dbMe.blues + dbMe.turn_blues, batteries: dbMe.batteries + dbMe.turn_batteries,
         turn_greens: 0, turn_blues: 0, turn_batteries: 0, reds_in_turn: 0, viruses_in_turn: 0 
       }).eq("id", me.id);
+      await writeLog(`${me.name} passou a vez com segurança e guardou os itens.`);
     }
     
     await checkRoundAndPass(nextPlayer);
@@ -415,6 +425,7 @@ export default function RoomPage() {
     const isRoundOver = nextIndex <= myIndex;
 
     if (isRoundOver) {
+      await writeLog(`A fase de Mercado Negro iniciou.`);
       await supabase.from("rooms").update({ status: 'crafting', current_turn_player_id: nextPlayer.id }).eq("id", room.id);
     } else {
       await supabase.from("rooms").update({ current_turn_player_id: nextPlayer.id }).eq("id", room.id);
@@ -422,7 +433,7 @@ export default function RoomPage() {
   };
 
   // ==========================================
-  // LÓGICA DO LOBBY & ESCALONAMENTO DINÂMICO
+  // LÓGICA DO LOBBY E CRAFTING BLINDADO
   // ==========================================
   const handleToggleReady = async () => {
     if (isProcessing) return;
@@ -437,17 +448,11 @@ export default function RoomPage() {
         const firstPlayer = updatedPlayers[0];
         const pCount = updatedPlayers.length;
         
-        // CÁLCULO INTELIGENTE DO SACO BASEADO NA QTD DE JOGADORES
         await supabase.from("rooms").update({ 
-          status: 'playing', 
-          current_turn_player_id: firstPlayer.id, 
-          round_count: 1,
-          bag_greens: pCount * 6,
-          bag_blues: pCount * 4,
-          bag_batteries: pCount * 6,
-          bag_reds: pCount * 1, // Ex: 2 curtos para 2 jogadores
-          bag_viruses: pCount * 1 // Ex: 2 vírus para 2 jogadores
+          status: 'playing', current_turn_player_id: firstPlayer.id, round_count: 1,
+          bag_greens: pCount * 6, bag_blues: pCount * 4, bag_batteries: pCount * 6, bag_reds: pCount * 1, bag_viruses: pCount * 1
         }).eq("id", room.id);
+        await writeLog(`A partida começou com ${pCount} jogadores.`);
 
       } else if (updatedPlayers.length === 1 && newReadyState) {
         alert("Aguarde mais jogadores.");
@@ -456,7 +461,6 @@ export default function RoomPage() {
     } finally { setIsProcessing(false); }
   };
 
-  // LÓGICA DO MERCADO NEGRO (CRAFTING)
   useEffect(() => {
     if (room?.status === 'crafting' && me && !me.has_finished_crafting && (!me.shop_slots || me.shop_slots.length === 0)) {
       const shuffled = [...SHOP_ITEMS].sort(() => 0.5 - Math.random());
@@ -477,20 +481,26 @@ export default function RoomPage() {
         greens: me.greens - item.cost.green, blues: me.blues - item.cost.blue, batteries: me.batteries - item.cost.yellow,
         inventory: newInventory, shop_slots: newShopSlots
       }).eq("id", me.id);
+      await writeLog(`${me.name} craftou o item clandestino [${item.name}].`);
     } finally { setIsProcessing(false); }
   };
 
-  const handleFinishCrafting = async () => {
-    if (isProcessing) return;
+  // CORREÇÃO DA CONDIÇÃO DE CORRIDA QUE TRAVAVA O MERCADO NEGRO
+  const handleFinishCrafting = async (isForced = false) => {
+    if (isProcessing && !isForced) return;
     setIsProcessing(true);
     try {
-      await supabase.from("players").update({ has_finished_crafting: true }).eq("id", me.id);
+      if (!isForced) {
+        await supabase.from("players").update({ has_finished_crafting: true }).eq("id", me.id);
+      }
 
-      const updatedPlayers = players.map(p => p.id === me.id ? { ...p, has_finished_crafting: true } : p);
-      const aliveP = updatedPlayers.filter(p => p.hp > 0);
+      // Busca dados frescos e seguros do banco
+      const { data: freshPlayers } = await supabase.from("players").select("*").eq("room_id", room.id);
+      const aliveP = freshPlayers.filter(p => p.hp > 0);
       const allFinished = aliveP.every(p => p.has_finished_crafting);
 
       if (allFinished) {
+        await writeLog(`Início da Rodada ${room.round_count + 1}`);
         await supabase.from("rooms").update({ status: 'playing', round_count: room.round_count + 1 }).eq("id", room.id);
         for (const p of aliveP) {
           await supabase.from("players").update({ has_finished_crafting: false, shop_slots: [] }).eq("id", p.id);
@@ -509,10 +519,10 @@ export default function RoomPage() {
 
   return (
     <>
-      {/* MODAL DO GUIA HACKER */}
+      {/* MODAL DO GUIA HACKER (Com overflow Y arrumado) */}
       {showGuide && (
-        <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4 md:p-12 backdrop-blur-sm overflow-y-auto">
-          <div className="bg-[#111111] border border-[#d4a853]/30 w-full max-w-3xl rounded-[10px] p-6 relative">
+        <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4 md:p-12 backdrop-blur-sm">
+          <div className="bg-[#111111] border border-[#d4a853]/30 w-full max-w-3xl rounded-[10px] p-6 relative max-h-[85vh] overflow-y-auto">
             <button onClick={() => setShowGuide(false)} className="absolute top-4 right-4 text-gray-500 hover:text-white font-bold text-xl">&times;</button>
             <h2 className={`${playfair.className} text-3xl text-[#d4a853] mb-6 text-center`}>Guia de Hardwares Ilegais</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -537,12 +547,33 @@ export default function RoomPage() {
         </div>
       )}
 
+      {/* MODAL DE REGRAS BÁSICAS */}
+      {showRules && (
+        <div className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4 md:p-12 backdrop-blur-sm">
+          <div className="bg-[#111111] border border-blue-500/30 w-full max-w-2xl rounded-[10px] p-8 relative max-h-[85vh] overflow-y-auto">
+            <button onClick={() => setShowRules(false)} className="absolute top-4 right-4 text-gray-500 hover:text-white font-bold text-xl">&times;</button>
+            <h2 className={`${playfair.className} text-3xl text-blue-500 mb-6 text-center`}>Como Sobreviver</h2>
+            <div className="space-y-4 text-sm text-[rgba(255,255,255,0.8)]">
+              <p>O objetivo é ser o último jogador vivo. Em seu turno, você deve sacar itens do Saco de Risco ou passar a vez.</p>
+              <ul className="list-disc pl-5 space-y-2 text-gray-300">
+                <li><strong className="text-white">Passar a Vez:</strong> Guarda todos os Materiais (PCB, Blueprint, Bat) no seu cofre e devolve as Ameaças pro Saco.</li>
+                <li><strong className="text-red-500">2 Curtos-Circuitos:</strong> Explosão! Você perde 1 HP e perde TODOS os itens que tirou no turno (voltam pro saco).</li>
+                <li><strong className="text-purple-500">2 Vírus:</strong> Congelamento! Você não toma dano, mas perde a vez e todos os itens sacados voltam pro saco.</li>
+                <li><strong className="text-[#d4a853]">Mercado Negro:</strong> Ocorre no final de toda rodada. Use seus Materiais guardados para comprar vantagens.</li>
+              </ul>
+            </div>
+            <button onClick={() => setShowRules(false)} className="mt-8 w-full bg-blue-600 text-white font-bold py-3 rounded hover:bg-blue-500">Entendi</button>
+          </div>
+        </div>
+      )}
+
       {/* TELA 1: LOBBY */}
       {currentStatus === 'lobby' && (
         <main className={`min-h-screen bg-[#0a0a0a] text-white p-6 md:p-12 flex flex-col items-center justify-center relative ${inter.className}`}>
           <div className="absolute top-6 left-6 flex gap-2">
             <button onClick={handleQuit} className="text-xs text-red-500 border border-red-500/30 px-4 py-2 rounded hover:bg-red-500/10 uppercase">Sair</button>
             <button onClick={() => setShowGuide(true)} className="text-xs text-[#d4a853] border border-[#d4a853]/30 px-4 py-2 rounded hover:bg-[#d4a853]/10 uppercase">Guia Hacker</button>
+            <button onClick={() => setShowRules(true)} className="text-xs text-blue-400 border border-blue-500/30 px-4 py-2 rounded hover:bg-blue-500/10 uppercase">Regras</button>
           </div>
           <div className="max-w-md w-full bg-[#111111] border border-[rgba(255,255,255,0.07)] rounded-[10px] p-8 text-center mt-10">
             <p className="text-[11px] tracking-[0.08em] text-[rgba(255,255,255,0.4)] uppercase mb-2">Código da Sala</p>
@@ -566,9 +597,12 @@ export default function RoomPage() {
       {/* TELA 2.5: MERCADO NEGRO (CRAFTING) */}
       {currentStatus === 'crafting' && (
         <main className={`min-h-screen bg-[#0a0a0a] text-white p-6 md:p-12 flex flex-col items-center relative ${inter.className}`}>
-          <button onClick={() => setShowGuide(true)} className="absolute top-6 left-6 text-xs text-[#d4a853] border border-[#d4a853]/30 px-4 py-2 rounded hover:bg-[#d4a853]/10 uppercase">Guia Hacker</button>
+          <div className="absolute top-6 left-6 flex gap-2">
+            <button onClick={() => setShowGuide(true)} className="text-xs text-[#d4a853] border border-[#d4a853]/30 px-4 py-2 rounded hover:bg-[#d4a853]/10 uppercase">Guia Hacker</button>
+            <button onClick={() => setShowRules(true)} className="text-xs text-blue-400 border border-blue-500/30 px-4 py-2 rounded hover:bg-blue-500/10 uppercase hidden md:block">Regras</button>
+          </div>
           
-          <div className="w-full max-w-4xl flex justify-between items-center mb-10 border-b border-[rgba(255,255,255,0.07)] pb-6 mt-10 md:mt-0">
+          <div className="w-full max-w-4xl flex justify-between items-center mb-10 border-b border-[rgba(255,255,255,0.07)] pb-6 mt-12 md:mt-0">
             <div>
               <p className="text-[11px] tracking-[0.08em] text-[#d4a853] uppercase mb-1">Fim da Rodada {room.round_count}</p>
               <h1 className={`${playfair.className} text-4xl text-white tracking-tight`}>Mercado Negro</h1>
@@ -585,7 +619,20 @@ export default function RoomPage() {
             <div className="flex-1 flex flex-col items-center justify-center text-center">
               <div className="w-10 h-10 border-2 border-[#d4a853] border-t-transparent rounded-full animate-spin mb-6"></div>
               <h2 className={`${playfair.className} text-2xl text-[rgba(255,255,255,0.8)]`}>Transações Concluídas</h2>
-              <p className="text-[rgba(255,255,255,0.4)] mt-2">Aguardando os outros jogadores terminarem as compras...</p>
+              <p className="text-[rgba(255,255,255,0.4)] mt-2 mb-8">Aguardando os outros jogadores terminarem as compras...</p>
+              
+              {/* Botão de Resgate de Softlock no Mercado */}
+              <div className="border-t border-[rgba(255,255,255,0.05)] pt-6 w-full max-w-sm">
+                <p className="text-xs text-[rgba(255,255,255,0.3)] mb-3">Alguém caiu e a tela travou?</p>
+                <div className="flex gap-2 justify-center">
+                    {players.map(p => {
+                       if(p.id !== me.id && p.hp > 0 && !onlineUsers.includes(p.id)) {
+                           return <button key={p.id} onClick={() => handleKickOffline(p)} className="text-[10px] bg-red-900/30 text-red-500 border border-red-500/30 px-3 py-1.5 rounded hover:bg-red-500/20 uppercase">Expulsar {p.name}</button>
+                       }
+                       return null;
+                    })}
+                </div>
+              </div>
             </div>
           ) : (
             <div className="w-full max-w-4xl flex flex-col">
@@ -624,7 +671,7 @@ export default function RoomPage() {
                 })}
               </div>
 
-              <button onClick={handleFinishCrafting} disabled={isProcessing} className="self-center bg-[#d4a853] text-black px-12 py-4 rounded-[6px] font-medium hover:bg-[#e0b767] transition-all text-lg active:scale-[0.98] shadow-[0_0_20px_rgba(212,168,83,0.2)] disabled:opacity-50 disabled:cursor-not-allowed">
+              <button onClick={() => handleFinishCrafting(false)} disabled={isProcessing} className="self-center bg-[#d4a853] text-black px-12 py-4 rounded-[6px] font-medium hover:bg-[#e0b767] transition-all text-lg active:scale-[0.98] shadow-[0_0_20px_rgba(212,168,83,0.2)] disabled:opacity-50 disabled:cursor-not-allowed">
                 {isProcessing ? 'Processando...' : 'Finalizar Compras'}
               </button>
             </div>
@@ -648,20 +695,21 @@ export default function RoomPage() {
             </div>
           )}
 
-          <header className="max-w-5xl mx-auto flex items-end justify-between border-b border-[rgba(255,255,255,0.07)] pb-6 mb-10">
+          <header className="max-w-5xl mx-auto flex items-end justify-between border-b border-[rgba(255,255,255,0.07)] pb-6 mb-10 mt-6 md:mt-0">
             <div>
               <p className="text-[11px] tracking-[0.08em] text-[#d4a853] uppercase mb-1">Rodada {room.round_count}</p>
               <div className="flex items-center gap-4">
                 <h1 className={`${playfair.className} text-3xl text-white tracking-tight`}>Sala <em className="text-[#d4a853] italic not-italic-numbers">{room.code}</em></h1>
-                <div className="flex gap-2 mt-2">
+                <div className="flex gap-2 mt-2 flex-wrap">
                   <button onClick={handleQuit} className="text-[10px] text-red-500 border border-red-500/30 px-3 py-1 rounded hover:bg-red-500/10 uppercase">Sair</button>
                   <button onClick={() => setShowGuide(true)} className="text-[10px] text-[#d4a853] border border-[#d4a853]/30 px-3 py-1 rounded hover:bg-[#d4a853]/10 uppercase">Guia Hacker</button>
+                  <button onClick={() => setShowRules(true)} className="text-[10px] text-blue-400 border border-blue-500/30 px-3 py-1 rounded hover:bg-blue-500/10 uppercase">Regras</button>
                 </div>
               </div>
             </div>
             <div className="text-right">
               <p className="text-[11px] tracking-[0.08em] text-[rgba(255,255,255,0.4)] uppercase mb-1">Saco de Risco</p>
-              <div className="flex gap-4 text-sm font-medium">
+              <div className="flex gap-3 text-sm font-medium">
                 <span className="text-green-500">{room.bag_greens} V</span>
                 <span className="text-blue-500">{room.bag_blues} A</span>
                 <span className="text-yellow-500">{room.bag_batteries} B</span>
@@ -764,6 +812,21 @@ export default function RoomPage() {
                   </div>
                 )
               })}
+
+              {/* TERMINAL DE EVENTOS (ACTION LOG) */}
+              <div className="bg-[#0a0a0a] border border-[rgba(255,255,255,0.05)] rounded-[10px] p-4 h-64 flex flex-col mt-4">
+                <p className="text-[10px] text-[rgba(255,255,255,0.4)] uppercase tracking-wider mb-2 border-b border-[rgba(255,255,255,0.05)] pb-2">Terminal de Eventos</p>
+                <div className="flex-1 overflow-y-auto space-y-2 pr-2 text-xs text-[rgba(255,255,255,0.6)] flex flex-col-reverse">
+                  {/* flex-col-reverse inverte a ordem visual, colocando os mais recentes embaixo, mas como a lista inverte, colocamos room.game_log direto */}
+                  {(room?.game_log || []).slice().reverse().map((log: string, idx: number) => (
+                    <div key={idx} className={`${log.includes('💥') || log.includes('💀') || log.includes('💣') ? 'text-red-400' : log.includes('🔧') || log.includes('🔥') ? 'text-green-400' : ''}`}>
+                      {log}
+                    </div>
+                  ))}
+                  {(room?.game_log || []).length === 0 && <span className="italic opacity-50">Nenhum evento registrado ainda...</span>}
+                </div>
+              </div>
+
             </div>
           </div>
         </main>
