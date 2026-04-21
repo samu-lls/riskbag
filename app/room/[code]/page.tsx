@@ -344,33 +344,27 @@ export default function RoomPage() {
 
   const handleMenuClick = () => playClick();
 
-  // ─── Detect enemy draws from log changes ────────────────────────────────────
-  const prevLogLen = useRef(0);
+  // ─── Detect enemy draws from last_draw field (silent — does not pollute log) ─
+  const prevDrawTs = useRef<number>(0);
   useEffect(() => {
-    if (!room?.game_log || !me || room.status !== 'playing') return;
-    const logs: string[] = room.game_log;
-    if (logs.length <= prevLogLen.current) { prevLogLen.current = logs.length; return; }
-    const newLogs = logs.slice(prevLogLen.current);
-    prevLogLen.current = logs.length;
-    if (!isMyTurn) {
-      for (const log of newLogs) {
-        if (log.includes('sacou PCB') || log.includes('tirou PCB'))
-          { showEnemyDraw(activePlayer?.name || '?', 'PCB',         'Placa de Circuito',  '#00ff88', '#001a0a', false); break; }
-        if (log.includes('sacou Blueprint') || log.includes('Blueprint'))
-          { showEnemyDraw(activePlayer?.name || '?', 'BLUEPRINT',   'Projeto Técnico',    '#00aaff', '#000d1a', false); break; }
-        if (log.includes('sacou Bateria') || log.includes('Bateria'))
-          { showEnemyDraw(activePlayer?.name || '?', 'BATERIA',     'Célula de Energia',  '#eab308', '#1a1000', false); break; }
-        if (log.includes('CURTO!') || log.includes('Curto-Circuito'))
-          { showEnemyDraw(activePlayer?.name || '?', 'CURTO!',      'Dano Letal Recebido','#ff3333', '#1a0000', true);  break; }
-        if (log.includes('CURTO') || log.includes('Curto'))
-          { showEnemyDraw(activePlayer?.name || '?', 'CURTO',       'Tensão Alta',        '#ff6666', '#140000', false); break; }
-        if (log.includes('VÍRUS ATIVO') || log.includes('congelado'))
-          { showEnemyDraw(activePlayer?.name || '?', 'VÍRUS ATIVO', 'Sistema Congelado',  '#cc44ff', '#0d0014', true);  break; }
-        if (log.includes('VÍRUS') || log.includes('Vírus'))
-          { showEnemyDraw(activePlayer?.name || '?', 'VÍRUS',       'Ameaça Detectada',   '#cc44ff', '#0d0014', false); break; }
-      }
-    }
-  }, [room?.game_log]);
+    if (!room?.last_draw || !me || room.status !== 'playing') return;
+    const { card, player, ts } = room.last_draw;
+    if (!ts || ts <= prevDrawTs.current) return;
+    prevDrawTs.current = ts;
+    if (isMyTurn) return; // quem sacou já viu o flash local
+
+    const MAP: Record<string, [string, string, string, string, boolean]> = {
+      'PCB':        ['PCB',        'Placa de Circuito',   '#00ff88', '#001a0a', false],
+      'BLUEPRINT':  ['BLUEPRINT',  'Projeto Técnico',     '#00aaff', '#000d1a', false],
+      'BATERIA':    ['BATERIA',    'Célula de Energia',   '#eab308', '#1a1000', false],
+      'VÍRUS':      ['VÍRUS',      'Ameaça Detectada',    '#cc44ff', '#0d0014', false],
+      'VÍRUS ATIVO':['VÍRUS ATIVO','Sistema Congelado',   '#cc44ff', '#0d0014', true ],
+      'CURTO':      ['CURTO',      'Tensão Alta',         '#ff6666', '#140000', false],
+      'CURTO!':     ['CURTO!',     'Dano Letal Recebido', '#ff3333', '#1a0000', true ],
+    };
+    const entry = MAP[card];
+    if (entry) showEnemyDraw(player || activePlayer?.name || '?', ...entry);
+  }, [room?.last_draw]);
 
   const isMyTurn  = room?.current_turn_player_id === me?.id && room?.status === 'playing';
   const amIDead   = me?.hp <= 0;
@@ -465,7 +459,7 @@ export default function RoomPage() {
     handleMenuClick();
     setIsProcessing(true);
     try {
-      await supabase.from("rooms").update({ status: 'lobby', bag_greens: 15, bag_blues: 10, bag_batteries: 15, bag_reds: 5, bag_viruses: 5, current_turn_player_id: null, round_starter_id: null, next_round_starter_id: null, round_count: 1, game_log: [] }).eq("id", room.id);
+      await supabase.from("rooms").update({ status: 'lobby', bag_greens: 15, bag_blues: 10, bag_batteries: 15, bag_reds: 5, bag_viruses: 5, current_turn_player_id: null, round_starter_id: null, next_round_starter_id: null, round_count: 1, game_log: [], last_draw: null }).eq("id", room.id);
       for (const p of players) await supabase.from("players").update({ hp: 3, greens: 0, blues: 0, batteries: 0, turn_greens: 0, turn_blues: 0, turn_batteries: 0, reds_in_turn: 0, viruses_in_turn: 0, forced_draws: 0, is_ready: false, inventory: [], shop_slots: [], has_finished_crafting: false }).eq("id", p.id);
     } finally { setIsProcessing(false); }
   };
@@ -598,25 +592,31 @@ export default function RoomPage() {
 
       let isExplosion = false, isVirusSkip = false;
 
+      let drawnCard = '';
       if (roll < newBagGreens) {
         newBagGreens--; newTurnGreens++;
+        drawnCard = 'PCB';
         playDraw();
         showFlash({ text: 'PCB', sub: 'Placa de Circuito', color: '#00ff88', bgColor: '#001a0a', isHazard: false });
       } else if (roll < newBagGreens + newBagBlues) {
         newBagBlues--; newTurnBlues++;
+        drawnCard = 'BLUEPRINT';
         playDraw();
         showFlash({ text: 'BLUEPRINT', sub: 'Projeto Técnico', color: '#00aaff', bgColor: '#000d1a', isHazard: false });
       } else if (roll < newBagGreens + newBagBlues + newBagBatteries) {
         newBagBatteries--; newTurnBatteries++;
+        drawnCard = 'BATERIA';
         playDraw();
         showFlash({ text: 'BATERIA', sub: 'Célula de Energia', color: '#eab308', bgColor: '#1a1000', isHazard: false });
       } else if (roll < newBagGreens + newBagBlues + newBagBatteries + newBagViruses) {
         newBagViruses--; newVirusesInTurn++;
         if (newVirusesInTurn >= 2) {
           isVirusSkip = true;
+          drawnCard = 'VÍRUS ATIVO';
           playError();
           showFlash({ text: 'VÍRUS ATIVO', sub: 'Sistema Congelado', color: '#cc44ff', bgColor: '#0d0014', isHazard: true });
         } else {
+          drawnCard = 'VÍRUS';
           playDraw();
           showFlash({ text: 'VÍRUS', sub: 'Ameaça Detectada', color: '#cc44ff', bgColor: '#0d0014', isHazard: false });
         }
@@ -624,9 +624,11 @@ export default function RoomPage() {
         newBagReds--; newRedsInTurn++;
         if (newRedsInTurn >= 2) {
           isExplosion = true; currentHp--;
+          drawnCard = 'CURTO!';
           playError(); triggerShake(); triggerDamage(me.id);
           showFlash({ text: 'CURTO!', sub: 'Dano Letal Recebido', color: '#ff3333', bgColor: '#1a0000', isHazard: true });
         } else {
+          drawnCard = 'CURTO';
           playDraw();
           showFlash({ text: 'CURTO', sub: 'Tensão Alta', color: '#ff6666', bgColor: '#140000', isHazard: false });
         }
@@ -651,7 +653,7 @@ export default function RoomPage() {
         newTurnGreens = 0; newTurnBlues = 0; newTurnBatteries = 0; newRedsInTurn = 0; newVirusesInTurn = 0; newForcedDraws = 0;
       }
 
-      await supabase.from("rooms").update({ bag_greens: newBagGreens, bag_blues: newBagBlues, bag_reds: newBagReds, bag_batteries: newBagBatteries, bag_viruses: newBagViruses }).eq("id", room.id);
+      await supabase.from("rooms").update({ bag_greens: newBagGreens, bag_blues: newBagBlues, bag_reds: newBagReds, bag_batteries: newBagBatteries, bag_viruses: newBagViruses, last_draw: { card: drawnCard, player: me.name, ts: Date.now() } }).eq("id", room.id);
       await supabase.from("players").update({ hp: currentHp, turn_greens: newTurnGreens, turn_blues: newTurnBlues, turn_batteries: newTurnBatteries, reds_in_turn: newRedsInTurn, viruses_in_turn: newVirusesInTurn, forced_draws: newForcedDraws, inventory: updatedMyInv }).eq("id", me.id);
 
       if (isExplosion) {
@@ -1488,7 +1490,7 @@ export default function RoomPage() {
                             {/* 3D Icon art area */}
                             <div className="flex-1 flex items-center justify-center px-1 py-1" style={{ minHeight: 0 }}>
                               {DRAW_ICONS_3D[enemyDraw.text]
-                                ? <div style={{ width: '100%', height: '100%', maxHeight: 58 }}>{DRAW_ICONS_3D[enemyDraw.text](enemyDraw.color, 58)}</div>
+                                ? <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', maxHeight: 58 }}>{DRAW_ICONS_3D[enemyDraw.text](enemyDraw.color, 58)}</div>
                                 : null}
                             </div>
                             {/* Subtitle bottom */}
