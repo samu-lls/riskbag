@@ -59,6 +59,8 @@ export default function RoomPage() {
   const [screenShake,  setScreenShake]  = useState(false);
   const [glitchAll,    setGlitchAll]    = useState(false);
   const [damagedPlayer,setDamagedPlayer]= useState<string | null>(null);
+  const [shopTimer,    setShopTimer]    = useState<number | null>(null);
+  const shopTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ─── Screen effects ──────────────────────────────────────────────────────────
   const triggerShake = () => {
@@ -198,18 +200,34 @@ export default function RoomPage() {
 
   const handleKickOffline = async (targetPlayer: any) => {
     handleMenuClick();
-    if (!window.confirm(`Eliminar ${targetPlayer.name} por inatividade?`)) return;
+    if (!window.confirm(`Expulsar ${targetPlayer.name} por inatividade?`)) return;
     setIsProcessing(true);
     try {
-      if (room.current_turn_player_id === targetPlayer.id && (room.status === 'playing' || room.status === 'crafting')) {
-        await supabase.from("rooms").update({ bag_greens: room.bag_greens + targetPlayer.turn_greens, bag_blues: room.bag_blues + targetPlayer.turn_blues, bag_batteries: room.bag_batteries + targetPlayer.turn_batteries, bag_reds: room.bag_reds + targetPlayer.reds_in_turn, bag_viruses: room.bag_viruses + targetPlayer.viruses_in_turn }).eq("id", room.id);
-        const nextPlayer = getNextAlivePlayer(targetPlayer.id);
-        if (nextPlayer && room.status === 'playing') await supabase.from("rooms").update({ current_turn_player_id: nextPlayer.id }).eq("id", room.id);
+      if (room.status === 'lobby') {
+        // No lobby: apenas remove o jogador da sala
+        await supabase.from("players").delete().eq("id", targetPlayer.id);
+      } else {
+        // Em jogo: devolve itens ao saco, passa o turno se necessário, e elimina
+        if (room.current_turn_player_id === targetPlayer.id) {
+          const { data: freshRoom } = await supabase.from("rooms").select("*").eq("id", room.id).single();
+          await supabase.from("rooms").update({
+            bag_greens:    freshRoom.bag_greens    + (targetPlayer.turn_greens   || 0),
+            bag_blues:     freshRoom.bag_blues     + (targetPlayer.turn_blues    || 0),
+            bag_batteries: freshRoom.bag_batteries + (targetPlayer.turn_batteries|| 0),
+            bag_reds:      freshRoom.bag_reds      + (targetPlayer.reds_in_turn  || 0),
+            bag_viruses:   freshRoom.bag_viruses   + (targetPlayer.viruses_in_turn|| 0),
+          }).eq("id", room.id);
+          const nextPlayer = getNextAlivePlayer(targetPlayer.id);
+          if (nextPlayer && room.status === 'playing') {
+            await supabase.from("rooms").update({ current_turn_player_id: nextPlayer.id }).eq("id", room.id);
+          }
+        }
+        await writeLog(`${targetPlayer.name} foi expulso por inatividade.`);
+        await supabase.from("players").update({ hp: 0 }).eq("id", targetPlayer.id);
+        if (room.status === 'crafting') handleFinishCrafting(true);
       }
-      await writeLog(`${targetPlayer.name} foi eliminado por inatividade.`);
-      await supabase.from("players").update({ hp: 0 }).eq("id", targetPlayer.id);
-      if (room.status === 'crafting') handleFinishCrafting(true);
-    } finally { setIsProcessing(false); }
+    } catch(e) { console.error("kick error", e); }
+    finally { setIsProcessing(false); }
   };
 
   const handleReturnToLobby = async () => {
@@ -470,10 +488,11 @@ export default function RoomPage() {
       const updatedPlayers = players.map(p => p.id === me.id ? { ...p, is_ready: newReadyState } : p);
       const allReady = updatedPlayers.length > 1 && updatedPlayers.every(p => p.is_ready);
       if (allReady && room.status === 'lobby') {
-        const firstPlayer = updatedPlayers[0];
+        const randomIndex = Math.floor(Math.random() * updatedPlayers.length);
+        const firstPlayer = updatedPlayers[randomIndex];
         const pCount = updatedPlayers.length;
         await supabase.from("rooms").update({ status: 'playing', current_turn_player_id: firstPlayer.id, round_count: 1, bag_greens: pCount * 6, bag_blues: pCount * 4, bag_batteries: pCount * 6, bag_reds: pCount * 1, bag_viruses: pCount * 1 }).eq("id", room.id);
-        await writeLog(`A partida começou.`);
+        await writeLog(`A partida começou. Primeiro turno: ${firstPlayer.name}.`);
       } else if (updatedPlayers.length === 1 && newReadyState) {
         await supabase.from("players").update({ is_ready: false }).eq("id", me.id);
       }
@@ -481,6 +500,30 @@ export default function RoomPage() {
   };
 
   // ─── Shop slots ───────────────────────────────────────────────────────────────
+  // ─── Shop timer ──────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (room?.status === 'crafting' && me && !me.has_finished_crafting) {
+      // Start 60-second countdown
+      setShopTimer(60);
+      shopTimerRef.current = setInterval(() => {
+        setShopTimer(prev => {
+          if (prev === null) return null;
+          if (prev <= 1) {
+            clearInterval(shopTimerRef.current!);
+            handleFinishCrafting(false);
+            return null;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    } else {
+      // Clear timer when not in crafting
+      if (shopTimerRef.current) clearInterval(shopTimerRef.current);
+      setShopTimer(null);
+    }
+    return () => { if (shopTimerRef.current) clearInterval(shopTimerRef.current); };
+  }, [room?.status, me?.has_finished_crafting]);
+
   useEffect(() => {
     if (room?.status === 'crafting' && me && !me.has_finished_crafting && (!me.shop_slots || me.shop_slots.length === 0)) {
       let possibleItems = [...SHOP_ITEMS];
@@ -562,6 +605,7 @@ export default function RoomPage() {
     <motion.div
       animate={screenShake ? { x: [-4, 4, -6, 6, -3, 3, 0], rotate: [-0.4, 0.4, -0.3, 0.3, 0] } : {}}
       transition={{ duration: 0.4, ease: 'easeOut' }}
+      style={{ overflowX: 'hidden' }}
     >
       {/* Glitch overlay */}
       {glitchAll && <div className="glitch-overlay" />}
@@ -922,11 +966,38 @@ export default function RoomPage() {
                   Mercado Negro
                 </h1>
               </div>
-              <div className="cyber-card px-5 py-3 flex items-center gap-4">
-                <span className="section-label" style={{ letterSpacing: '0.2em' }}>Cofre:</span>
-                <span className="mono font-bold text-sm" style={{ color: '#00ff88' }}>{me.greens} PCB</span>
-                <span className="mono font-bold text-sm" style={{ color: '#00aaff' }}>{me.blues} BLUE</span>
-                <span className="mono font-bold text-sm" style={{ color: '#eab308' }}>{me.batteries} BAT</span>
+              <div className="flex flex-col items-end gap-3">
+                {/* Timer */}
+                {shopTimer !== null && !me.has_finished_crafting && (
+                  <div
+                    className="flex items-center gap-2 px-4 py-2 rounded"
+                    style={{
+                      background: shopTimer <= 15 ? 'rgba(255,51,51,0.1)' : 'rgba(212,168,83,0.06)',
+                      border: `1px solid ${shopTimer <= 15 ? 'rgba(255,51,51,0.4)' : 'rgba(212,168,83,0.2)'}`,
+                    }}
+                  >
+                    <span className="section-label" style={{ color: shopTimer <= 15 ? '#ff4444' : 'rgba(212,168,83,0.6)', letterSpacing: '0.15em' }}>
+                      LOJA FECHA EM
+                    </span>
+                    <span
+                      className="mono font-bold text-xl"
+                      style={{
+                        color: shopTimer <= 15 ? '#ff4444' : '#d4a853',
+                        textShadow: shopTimer <= 15 ? '0 0 10px rgba(255,68,68,0.6)' : '0 0 8px rgba(212,168,83,0.4)',
+                        minWidth: 28,
+                        textAlign: 'center',
+                      }}
+                    >
+                      {shopTimer}s
+                    </span>
+                  </div>
+                )}
+                <div className="cyber-card px-5 py-3 flex items-center gap-4">
+                  <span className="section-label" style={{ letterSpacing: '0.2em' }}>Cofre:</span>
+                  <span className="mono font-bold text-sm" style={{ color: '#00ff88' }}>{me.greens} PCB</span>
+                  <span className="mono font-bold text-sm" style={{ color: '#00aaff' }}>{me.blues} BLUE</span>
+                  <span className="mono font-bold text-sm" style={{ color: '#eab308' }}>{me.batteries} BAT</span>
+                </div>
               </div>
             </div>
 

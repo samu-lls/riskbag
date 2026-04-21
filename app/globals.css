@@ -31,6 +31,7 @@ html, body {
   margin: 0;
   padding: 0;
   min-height: 100vh;
+  overflow-x: hidden; /* prevent horizontal scroll from shake animation */
 }
 
 /* Scanline overlay — atmospheric texture */
