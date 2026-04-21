@@ -14,6 +14,17 @@ export type PatchEntry = {
 };
 
 export const PATCH_NOTES: PatchEntry[] = [
+    {
+    version: "v0.5",
+    date: "21, Abr 2026",
+    title: "Balanceamente e Nova Mecanica",
+    changes: [
+      { type: 'novo',          text: "Adicionado a Troca Negra: troque 3 itens por 1 outro a sua escolha!" },
+      { type: 'balanceamento', text: "TROJAN: Antes: +3 compras forçadas para qualquer player / Agora: +6 compras forçadas para qualquer player" },
+      { type: 'balanceamento', text: "DDoS: Antes: +2 compras forçadas para todos os players / Agora: +4 compras forçadas para para todos os players" },
+      { type: 'balanceamento', text: "HP Máximo: Antes: HP máximo ilimitado / Agora: HP Máximo = 4" },
+    ],
+  },
   {
     version: "v0.4",
     date: "Abr 2026",

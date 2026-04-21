@@ -494,7 +494,8 @@ export default function RoomPage() {
       playSuccess();
 
       if (itemId === 'patch') {
-        await supabase.from("players").update({ hp: dbMe.hp + 1, inventory: updatedMyInv }).eq("id", me.id);
+        const newHp = Math.min(4, dbMe.hp + 1);
+        await supabase.from("players").update({ hp: newHp, inventory: updatedMyInv }).eq("id", me.id);
       } else if (itemId === 'vpn') {
         const nextPlayer = await getNextAlivePlayer(me.id);
         await supabase.from("rooms").update({ bag_reds: dbRoom.bag_reds + dbMe.reds_in_turn, bag_viruses: dbRoom.bag_viruses + dbMe.viruses_in_turn, current_turn_player_id: nextPlayer.id }).eq("id", room.id);
@@ -507,7 +508,7 @@ export default function RoomPage() {
         await supabase.from("players").update({ reds_in_turn: dbMe.reds_in_turn - returnedReds, viruses_in_turn: dbMe.viruses_in_turn - returnedViruses, inventory: updatedMyInv }).eq("id", me.id);
       } else if (itemId === 'trojan' && targetDb) {
         triggerGlitch();
-        await supabase.from("players").update({ forced_draws: targetDb.forced_draws + 3 }).eq("id", targetId);
+        await supabase.from("players").update({ forced_draws: targetDb.forced_draws + 6 }).eq("id", targetId);
         await supabase.from("players").update({ inventory: updatedMyInv }).eq("id", me.id);
       } else if (itemId === 'phishing' && targetDb) {
         triggerGlitch();
@@ -546,14 +547,15 @@ export default function RoomPage() {
         } else {
           triggerShake(); triggerDamage(targetId);
           await supabase.from("players").update({ hp: targetDb.hp - 1 }).eq("id", targetId);
-          await supabase.from("players").update({ hp: dbMe.hp + 1, inventory: updatedMyInv }).eq("id", me.id);
+          const newHpRansomware = Math.min(4, dbMe.hp + 1);
+          await supabase.from("players").update({ hp: newHpRansomware, inventory: updatedMyInv }).eq("id", me.id);
           await writeLog(`${me.name} sugou 1 HP de ${targetDb.name}.`);
         }
       } else if (itemId === 'ddos') {
         triggerGlitch(); triggerShake();
         const { data: allPlayers } = await supabase.from("players").select("*").eq("room_id", room.id);
         for(const p of allPlayers) {
-          if (p.id !== me.id && p.hp > 0) await supabase.from("players").update({ forced_draws: p.forced_draws + 2 }).eq("id", p.id);
+          if (p.id !== me.id && p.hp > 0) await supabase.from("players").update({ forced_draws: p.forced_draws + 4 }).eq("id", p.id);
         }
         await supabase.from("players").update({ inventory: updatedMyInv }).eq("id", me.id);
       } else if (itemId === 'logicbomb') {
@@ -809,6 +811,13 @@ export default function RoomPage() {
   }, [room?.status, me?.has_finished_crafting]);
 
   useEffect(() => {
+    if (room?.status === 'crafting') {
+      setTradeGive({ greens: 0, blues: 0, batteries: 0 });
+      setTradeWant(null);
+    }
+  }, [room?.status]);
+
+  useEffect(() => {
     if (room?.status === 'crafting' && me && !me.has_finished_crafting && (!me.shop_slots || me.shop_slots.length === 0)) {
       let possibleItems = [...SHOP_ITEMS];
       if ((me.inventory || []).includes('firewall')) possibleItems = possibleItems.filter(item => item.id !== 'firewall');
@@ -827,6 +836,32 @@ export default function RoomPage() {
       const newShopSlots = me.shop_slots.filter((id: string) => id !== item.id);
       await supabase.from("players").update({ greens: me.greens - item.cost.green, blues: me.blues - item.cost.blue, batteries: me.batteries - item.cost.yellow, inventory: newInventory, shop_slots: newShopSlots }).eq("id", me.id);
       await writeLog(`${me.name} craftou [${item.name}].`);
+    } finally { setIsProcessing(false); }
+  };
+
+  // ─── Resource Trade (Mercado Negro — troca fixa) ──────────────────────────────
+  // O jogador entrega 3 recursos à sua escolha e recebe 1 à sua escolha.
+  // Disponível quantas vezes quiser durante o crafting.
+  const [tradeGive, setTradeGive] = useState<{ greens: number; blues: number; batteries: number }>({ greens: 0, blues: 0, batteries: 0 });
+  const [tradeWant, setTradeWant] = useState<'greens' | 'blues' | 'batteries' | null>(null);
+
+  const tradeGiveTotal = tradeGive.greens + tradeGive.blues + tradeGive.batteries;
+
+  const handleResourceTrade = async () => {
+    if (tradeGiveTotal !== 3 || !tradeWant || isProcessing) return;
+    if (me.greens < tradeGive.greens || me.blues < tradeGive.blues || me.batteries < tradeGive.batteries) return;
+    setIsProcessing(true);
+    try {
+      const gain = { greens: 0, blues: 0, batteries: 0 };
+      gain[tradeWant] = 1;
+      await supabase.from("players").update({
+        greens:    me.greens    - tradeGive.greens    + gain.greens,
+        blues:     me.blues     - tradeGive.blues     + gain.blues,
+        batteries: me.batteries - tradeGive.batteries + gain.batteries,
+      }).eq("id", me.id);
+      await writeLog(`${me.name} fez uma troca no Mercado Negro.`);
+      setTradeGive({ greens: 0, blues: 0, batteries: 0 });
+      setTradeWant(null);
     } finally { setIsProcessing(false); }
   };
 
@@ -1127,6 +1162,7 @@ export default function RoomPage() {
               <li><span className="text-red-400 font-bold">2× Curto-Circuito:</span> Explosão! Perde 1 HP e todos os itens do turno.</li>
               <li><span className="text-purple-400 font-bold">2× Vírus:</span> Congelamento! Perde a vez e todos os itens do turno.</li>
               <li><span style={{ color: '#d4a853' }} className="font-bold">Mercado Negro:</span> Use recursos para comprar vantagens no fim da rodada.</li>
+              <li><span style={{ color: '#00ff88' }} className="font-bold">HP Máximo:</span> Nenhum jogador pode ultrapassar <span className="font-bold text-white">4 de HP</span>, independente de itens usados.</li>
             </ul>
           </div>
           <button
@@ -1392,6 +1428,98 @@ export default function RoomPage() {
                     className="btn-secondary px-16"
                   >
                     Sair da Loja
+                  </button>
+                </div>
+
+                {/* ── Troca Fixa ── */}
+                <div
+                  className="mt-8 rounded-xl p-6"
+                  style={{ background: 'rgba(212,168,83,0.04)', border: '1px solid rgba(212,168,83,0.15)' }}
+                >
+                  <div className="flex items-center gap-3 mb-1">
+                    <span className={`${playfair.className} text-lg`} style={{ color: '#d4a853' }}>Câmbio Negro</span>
+                    <span className="section-label px-2 py-0.5 rounded" style={{ background: 'rgba(212,168,83,0.08)', color: 'rgba(212,168,83,0.6)', letterSpacing: '0.15em' }}>TROCA FIXA</span>
+                  </div>
+                  <p className="text-xs mb-5" style={{ color: 'rgba(200,208,218,0.4)' }}>
+                    Entregue <span style={{ color: '#d4a853' }}>3 recursos</span> à sua escolha e receba <span style={{ color: '#d4a853' }}>1 recurso</span> à sua escolha. Disponível quantas vezes quiser.
+                  </p>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Dar */}
+                    <div>
+                      <p className="section-label mb-3" style={{ letterSpacing: '0.18em', color: 'rgba(200,208,218,0.35)' }}>
+                        VOCÊ DÁ <span style={{ color: tradeGiveTotal === 3 ? '#00ff88' : tradeGiveTotal > 0 ? '#d4a853' : 'rgba(200,208,218,0.35)' }}>{tradeGiveTotal}/3</span>
+                      </p>
+                      <div className="flex flex-col gap-2">
+                        {([
+                          { key: 'greens',    label: 'PCB',       color: '#00ff88', max: me.greens    },
+                          { key: 'blues',     label: 'Blueprint', color: '#00aaff', max: me.blues     },
+                          { key: 'batteries', label: 'Bateria',   color: '#eab308', max: me.batteries },
+                        ] as const).map(({ key, label, color, max }) => (
+                          <div key={key} className="flex items-center gap-3">
+                            <span className="mono text-xs w-20" style={{ color }}>{label}</span>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => setTradeGive(prev => ({ ...prev, [key]: Math.max(0, prev[key] - 1) }))}
+                                disabled={tradeGive[key] === 0}
+                                className="w-6 h-6 rounded flex items-center justify-center mono font-bold text-sm transition-colors"
+                                style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(200,208,218,0.6)' }}
+                              >−</button>
+                              <span className="mono font-bold w-4 text-center" style={{ color }}>{tradeGive[key]}</span>
+                              <button
+                                onClick={() => setTradeGive(prev => ({ ...prev, [key]: Math.min(max, Math.min(3, prev[key] + 1 + (tradeGiveTotal - prev[key])) - (tradeGiveTotal - prev[key])) }))}
+                                disabled={tradeGive[key] >= max || tradeGiveTotal >= 3}
+                                className="w-6 h-6 rounded flex items-center justify-center mono font-bold text-sm transition-colors"
+                                style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)', color: 'rgba(200,208,218,0.6)' }}
+                              >+</button>
+                              <span className="section-label" style={{ color: 'rgba(200,208,218,0.25)' }}>/ {max}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Receber */}
+                    <div>
+                      <p className="section-label mb-3" style={{ letterSpacing: '0.18em', color: 'rgba(200,208,218,0.35)' }}>VOCÊ RECEBE</p>
+                      <div className="flex flex-col gap-2">
+                        {([
+                          { key: 'greens',    label: 'PCB',       color: '#00ff88' },
+                          { key: 'blues',     label: 'Blueprint', color: '#00aaff' },
+                          { key: 'batteries', label: 'Bateria',   color: '#eab308' },
+                        ] as const).map(({ key, label, color }) => (
+                          <button
+                            key={key}
+                            onClick={() => setTradeWant(tradeWant === key ? null : key)}
+                            className="flex items-center gap-3 px-3 py-2 rounded transition-all text-left"
+                            style={{
+                              background: tradeWant === key ? `${color}18` : 'rgba(255,255,255,0.03)',
+                              border: `1px solid ${tradeWant === key ? color + '60' : 'rgba(255,255,255,0.07)'}`,
+                              boxShadow: tradeWant === key ? `0 0 12px ${color}22` : 'none',
+                            }}
+                          >
+                            <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: tradeWant === key ? color : 'rgba(255,255,255,0.15)' }} />
+                            <span className="mono text-xs font-bold" style={{ color: tradeWant === key ? color : 'rgba(200,208,218,0.5)' }}>{label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={handleResourceTrade}
+                    disabled={tradeGiveTotal !== 3 || !tradeWant || isProcessing}
+                    className="mt-5 w-full py-3 rounded font-bold tracking-widest uppercase text-sm transition-all"
+                    style={{
+                      fontFamily: 'var(--font-ui)',
+                      fontSize: 12,
+                      background: tradeGiveTotal === 3 && tradeWant ? 'rgba(212,168,83,0.15)' : 'rgba(255,255,255,0.03)',
+                      border: `1px solid ${tradeGiveTotal === 3 && tradeWant ? 'rgba(212,168,83,0.5)' : 'rgba(255,255,255,0.07)'}`,
+                      color: tradeGiveTotal === 3 && tradeWant ? '#d4a853' : 'rgba(200,208,218,0.2)',
+                      cursor: tradeGiveTotal === 3 && tradeWant ? 'pointer' : 'not-allowed',
+                    }}
+                  >
+                    {tradeGiveTotal === 3 && tradeWant ? '⇄ Confirmar Troca' : `⇄ Selecione 3 para dar e 1 para receber`}
                   </button>
                 </div>
               </>
