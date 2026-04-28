@@ -270,7 +270,7 @@ export default function RoomPage() {
   };
 
   // ─── Init ────────────────────────────────────────────────────────────────────
-  useEffect(() => {
+useEffect(() => {
     if (hasInitialized.current) return;
     hasInitialized.current = true;
     const playerName = localStorage.getItem("playerName");
@@ -278,13 +278,16 @@ export default function RoomPage() {
 
     const initGame = async () => {
       try {
+        // FORÇA O CÓDIGO PARA MAIÚSCULO PARA EVITAR DUPLICAÇÃO NO BANCO
+        const upperCode = roomCode.toUpperCase();
+
         let { data: roomData, error: roomError } = await supabase
-          .from("rooms").select("*").eq("code", roomCode).maybeSingle();
+          .from("rooms").select("*").eq("code", upperCode).maybeSingle();
         if (roomError) throw new Error("Erro ao buscar sala: " + roomError.message);
         if (!roomData) {
           const { data: newRoom, error: insertRoomError } = await supabase
             .from("rooms")
-            .insert({ code: roomCode, status: 'lobby', bag_greens: 15, bag_blues: 10, bag_reds: 5, bag_batteries: 15, bag_viruses: 5, game_log: [] })
+            .insert({ code: upperCode, status: 'lobby', bag_greens: 15, bag_blues: 10, bag_reds: 5, bag_batteries: 15, bag_viruses: 5, game_log: [] })
             .select().single();
           if (insertRoomError) throw new Error("Erro ao criar sala.");
           roomData = newRoom;
