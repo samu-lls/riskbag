@@ -858,6 +858,38 @@ export default function RoomPage() {
     }
   }, [room?.status, me]);
 
+  // NOVO: Supervisor de Deadlock do Mercado Negro
+  // Verifica se há jogadores offline segurando a finalização da loja
+  useEffect(() => {
+    // Só roda se a sala estiver na loja e se tivermos os dados necessários
+    if (room?.status !== 'crafting' || !players || players.length === 0 || !me || !onlineUsers) return;
+
+    // Para evitar conflitos de múltiplos clientes gravando no banco ao mesmo tempo,
+    // elegemos o "Host ativo" (o primeiro jogador da lista que está online)
+    const activeHost = players.find(p => onlineUsers.includes(p.id));
+    const amIActiveHost = activeHost?.id === me.id;
+
+    if (!amIActiveHost) return;
+
+    // Identifica jogadores que estão vivos, não terminaram a loja, mas ESTÃO OFFLINE
+    const offlinePendingPlayers = players.filter(p => 
+      p.hp > 0 && 
+      !p.has_finished_crafting && 
+      !onlineUsers.includes(p.id)
+    );
+
+    // Se encontrou alguém travando a sala, força a finalização deles no banco
+    if (offlinePendingPlayers.length > 0) {
+      offlinePendingPlayers.forEach(async (offlinePlayer) => {
+        console.log(`Forçando finalização do mercado para o jogador offline: ${offlinePlayer.name}`);
+        await supabase
+          .from("players")
+          .update({ has_finished_crafting: true })
+          .eq("id", offlinePlayer.id);
+      });
+    }
+  }, [room?.status, players, onlineUsers, me]);
+
   const handleBuyItem = async (item: typeof SHOP_ITEMS[0]) => {
     if (me.greens < item.cost.green || me.blues < item.cost.blue || me.batteries < item.cost.yellow) return;
     if (isProcessing) return;

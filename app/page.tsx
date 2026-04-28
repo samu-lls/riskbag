@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Playfair_Display } from "next/font/google";
 import { motion, AnimatePresence } from "framer-motion";
 import { PATCH_NOTES, type PatchEntry } from "@/lib/patchnotes";
+import { supabase } from "@/lib/supabase"; // Importação adicionada para a Task 2.2
 
 const playfair = Playfair_Display({ subsets: ["latin"], style: ["normal", "italic"] });
 
@@ -43,10 +44,16 @@ const TYPE_COLORS: Record<string, { bg: string; text: string; label: string }> =
 };
 
 export default function Home() {
-  const [name,        setName]        = useState("");
-  const [roomCode,    setRoomCode]    = useState("");
-  const [showManual,  setShowManual]  = useState(false);
-  const [showPatch,   setShowPatch]   = useState(false);
+  const [name,          setName]          = useState("");
+  const [roomCode,      setRoomCode]      = useState("");
+  const [showManual,    setShowManual]    = useState(false);
+  const [showPatch,     setShowPatch]     = useState(false);
+  
+  // Novos estados para a Task 2.2
+  const [showJoinInput, setShowJoinInput] = useState(false);
+  const [loading,       setLoading]       = useState(false);
+  const [errorMsg,      setErrorMsg]      = useState("");
+  
   const router = useRouter();
 
   const termLines = [
@@ -57,11 +64,80 @@ export default function Home() {
   ];
   const { displayed } = useTyping(termLines, 32);
 
-  const handleJoin = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name.trim() || !roomCode.trim()) return;
-    localStorage.setItem("playerName", name.trim());
-    router.push(`/room/${roomCode.toLowerCase()}`);
+  // Fluxo A - Criar Sala (Task 2.2)
+  const generateRoomCode = () => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  };
+
+const handleCreateRoom = async () => {
+    if (!name.trim()) return setErrorMsg("Alias (Nome) é obrigatório.");
+    setLoading(true);
+    setErrorMsg("");
+
+    try {
+      let code = "";
+      let exists = true;
+      
+      while (exists) {
+        code = generateRoomCode();
+        const { data } = await supabase.from('rooms').select('id').eq('code', code).maybeSingle();
+        exists = !!data;
+      }
+
+      // Inserção com as quantidades numéricas exatas
+      const { error: insertError } = await supabase
+        .from('rooms')
+        .insert([
+          { 
+            code: code.toUpperCase(), 
+            status: 'lobby',
+            round_count: 0,
+            game_log: ["Sessão iniciada"],
+            turn_order: [],
+            bag_greens: 0,     // Ajustado de array para número inteiro
+            bag_blues: 0,      // Ajustado de array para número inteiro
+            bag_batteries: 0,  // Ajustado de array para número inteiro
+            bag_reds: 0,       // Ajustado de array para número inteiro
+            bag_viruses: 0     // Ajustado de array para número inteiro
+          }
+        ]);
+
+      if (insertError) throw insertError;
+
+      localStorage.setItem('playerName', name.trim());
+      router.push(`/room/${code.toLowerCase()}`);
+    } catch (err: any) {
+      console.error("Erro na criação da sala:", err);
+      setErrorMsg(err.message || "Erro de conexão com o banco.");
+      setLoading(false);
+    }
+  };
+
+  // Fluxo B - Entrar em Sala Existente (Task 2.2)
+  const handleJoinRoom = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!name.trim()) return setErrorMsg("Alias (Nome) é obrigatório.");
+    if (!roomCode.trim()) return setErrorMsg("Código da sala é obrigatório.");
+    setLoading(true);
+    setErrorMsg("");
+
+    try {
+      const { data, error: fetchError } = await supabase
+        .from('rooms')
+        .select('status')
+        .eq('code', roomCode.toUpperCase())
+        .maybeSingle();
+
+      if (fetchError || !data) throw new Error("Sala não encontrada.");
+      if (data.status !== 'lobby') throw new Error("Acesso negado: Partida em andamento.");
+
+      localStorage.setItem('playerName', name.trim());
+      router.push(`/room/${roomCode.toLowerCase()}`);
+    } catch (err: any) {
+      setErrorMsg(err.message || "Erro ao entrar na sala.");
+      setLoading(false);
+    }
   };
 
   return (
@@ -200,7 +276,7 @@ export default function Home() {
           </div>
         </motion.div>
 
-        {/* Right: login card */}
+        {/* Right: login card refatorado para Task 2.2 */}
         <motion.div
           initial={{ opacity: 0, x: 24 }}
           animate={{ opacity: 1, x: 0 }}
@@ -215,7 +291,7 @@ export default function Home() {
               CREDENCIAIS DE ACESSO
             </p>
 
-            <form onSubmit={handleJoin} className="flex flex-col gap-5">
+            <div className="flex flex-col gap-5">
               <div className="flex flex-col gap-2">
                 <label className="section-label" style={{ letterSpacing: '0.2em' }}>
                   Alias (Nome)
@@ -226,8 +302,8 @@ export default function Home() {
                   onChange={e => setName(e.target.value)}
                   placeholder="Ex: ZeroCool"
                   maxLength={12}
-                  required
-                  className="w-full px-4 py-3 rounded-[6px] text-white placeholder-opacity-30 focus:outline-none transition-all"
+                  disabled={loading}
+                  className="w-full px-4 py-3 rounded-[6px] text-white placeholder-opacity-30 focus:outline-none transition-all disabled:opacity-50"
                   style={{
                     background: 'var(--bg)',
                     border: '1px solid rgba(255,255,255,0.08)',
@@ -241,41 +317,74 @@ export default function Home() {
                 />
               </div>
 
-              <div className="flex flex-col gap-2">
-                <label className="section-label" style={{ letterSpacing: '0.2em' }}>
-                  Código da Sala
-                </label>
-                <input
-                  type="text"
-                  value={roomCode}
-                  onChange={e => setRoomCode(e.target.value.toUpperCase())}
-                  placeholder="Ex: ALPHA"
-                  maxLength={8}
-                  required
-                  className="w-full px-4 py-3 rounded-[6px] focus:outline-none transition-all"
-                  style={{
-                    background: 'var(--bg)',
-                    border: '1px solid rgba(255,255,255,0.08)',
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 15,
-                    letterSpacing: '0.2em',
-                    color: '#d4a853',
-                  }}
-                  onFocus={e => (e.target.style.borderColor = 'rgba(212,168,83,0.5)')}
-                  onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.08)')}
-                />
-              </div>
+              {errorMsg && (
+                <div className="text-[#ff4444] text-xs section-label p-2 rounded" style={{ background: 'rgba(255,68,68,0.1)', border: '1px solid rgba(255,68,68,0.2)' }}>
+                  [ERRO] {errorMsg}
+                </div>
+              )}
 
-              <button type="submit" className="btn-primary w-full mt-2" style={{ height: 52 }}>
-                Conectar à Rede
-              </button>
-            </form>
+              {!showJoinInput ? (
+                <div className="flex flex-col gap-3 mt-2">
+                  <button onClick={handleCreateRoom} disabled={loading} className="btn-primary w-full" style={{ height: 52 }}>
+                    {loading ? "INICIALIZANDO..." : "CRIAR NOVA SALA"}
+                  </button>
+                  <button 
+                    onClick={() => setShowJoinInput(true)} 
+                    disabled={loading}
+                    className="w-full section-label px-4 transition-all hover:bg-[rgba(255,255,255,0.03)]" 
+                    style={{ border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(200,208,218,0.7)', height: 52, borderRadius: 6 }}
+                  >
+                    ENTRAR COM CÓDIGO
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={handleJoinRoom} className="flex flex-col gap-3 mt-2 animate-in fade-in slide-in-from-top-2">
+                  <div className="flex flex-col gap-2">
+                    <div className="flex justify-between items-center">
+                      <label className="section-label" style={{ letterSpacing: '0.2em' }}>
+                        Código da Sala
+                      </label>
+                      <button 
+                        type="button"
+                        onClick={() => setShowJoinInput(false)} 
+                        className="text-[10px] text-gray-500 hover:text-white transition-colors tracking-widest"
+                      >
+                        VOLTAR
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      value={roomCode}
+                      onChange={e => setRoomCode(e.target.value.toUpperCase())}
+                      placeholder="Ex: ALPHA1"
+                      maxLength={6}
+                      disabled={loading}
+                      required
+                      className="w-full px-4 py-3 rounded-[6px] focus:outline-none transition-all disabled:opacity-50 uppercase"
+                      style={{
+                        background: 'var(--bg)',
+                        border: '1px solid rgba(255,255,255,0.08)',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 15,
+                        letterSpacing: '0.2em',
+                        color: '#d4a853',
+                      }}
+                      onFocus={e => (e.target.style.borderColor = 'rgba(212,168,83,0.5)')}
+                      onBlur={e => (e.target.style.borderColor = 'rgba(255,255,255,0.08)')}
+                    />
+                  </div>
+                  <button type="submit" disabled={loading} className="btn-primary w-full mt-2" style={{ height: 52 }}>
+                    {loading ? "CONECTANDO..." : "ACESSAR SALA"}
+                  </button>
+                </form>
+              )}
+            </div>
 
             <p
               className="text-center mt-4 section-label"
               style={{ letterSpacing: '0.12em', lineHeight: 1.6 }}
             >
-              Sem conta necessária. Entre com um código de sala para criar ou entrar em uma partida.
+              Sem conta necessária. Crie uma nova sessão segura ou junte-se a uma existente.
             </p>
           </div>
         </motion.div>
